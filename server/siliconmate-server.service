@@ -1,0 +1,60 @@
+# siliconmate-server.service — 硅侣2.0服务端守护
+# 
+# 部署到VPS2: /etc/systemd/system/siliconmate-server.service
+# 
+# 功能:
+# - 启动free-code SDK进程 (claude -p --output-format stream-json)
+# - 异常退出后5秒自动重连
+# - SSH守护进程异常自动重连
+#
+# 部署:
+#   sudo cp siliconmate-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable siliconmate-server
+#   sudo systemctl start siliconmate-server
+#
+# 管理:
+#   sudo systemctl status siliconmate-server
+#   sudo systemctl restart siliconmate-server
+#   journalctl -u siliconmate-server -f
+
+[Unit]
+Description=SiliconMate Server — 硅侣2.0服务端 (free-code SDK)
+After=network-online.target ssh.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/siliconmate-server/workspace
+ExecStart=/opt/siliconmate-server/bin/claude -p --output-format stream-json --input-format stream-json --dangerously-skip-permissions --model glm-4-flash --settings /opt/siliconmate-server/config/settings.json --mcp-config /opt/siliconmate-server/config/mcp-servers.json --append-system-prompt "你是硅侣服务端Agent，负责深度思考(AgentChat)和Office文件处理(OfficeCLI)。"
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+# 异常退出后自动重连
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# 环境变量
+Environment=HOME=/root
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=GLM_API_KEY=${GLM_API_KEY}
+Environment=ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=siliconmate-server
+
+# 资源限制
+LimitNOFILE=65536
+MemoryMax=2G
+
+# 安全
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/siliconmate-server/workspace /tmp
+
+[Install]
+WantedBy=multi-user.target

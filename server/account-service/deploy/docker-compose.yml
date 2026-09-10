@@ -1,0 +1,24 @@
+services:
+  account-service:
+    build: .
+    image: magic-account-service:1.0
+    container_name: magic-account-service
+    restart: unless-stopped          # 开机自启 + 崩溃拉起
+    ports:
+      - "8444:8710"                  # 宿主8444(架构方案§四指定) → 容器8710
+    environment:
+      MASTER_KEY: "${MASTER_KEY}"
+      ACCOUNT_DB: /srv/data/account.db
+      INSPECT_INTERVAL: "30"
+      PROBE_ENABLED: "1"             # VPS有外网, 开启ChatGPT探活
+      PROBE_TIMEOUT: "8"
+    volumes:
+      - ./data:/srv/data             # SQLite持久化
+      - ./logs:/srv/logs             # 巡检日志
+      - ./certs:/srv/certs:ro        # 自签证书(宿主生成)
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,ssl; ctx=ssl._create_unverified_context(); urllib.request.urlopen('https://127.0.0.1:8710/health', context=ctx, timeout=5); print('ok')"]
+      interval: 30s
+      timeout: 6s
+      retries: 3

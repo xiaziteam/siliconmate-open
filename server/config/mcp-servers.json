@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "agentchat": {
+      "command": "python3",
+      "args": ["/opt/siliconmate-server/agentchat/mcp-server/server.py"],
+      "env": {
+        "CHROME_CDP_URL": "http://127.0.0.1:9222"
+      },
+      "description": "AgentChat MCP Server — 多AI协作 (OneWeb/WebSubAgent/IndependentTasks)"
+    },
+    "officecli": {
+      "command": "npx",
+      "args": ["-y", "officecli-mcp@latest"],
+      "env": {},
+      "description": "OfficeCLI MCP Server — Office文档处理 (.docx/.xlsx/.pptx)"
+    }
+  }
+}

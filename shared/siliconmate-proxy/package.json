@@ -1,0 +1,23 @@
+{
+  "name": "siliconmate-proxy",
+  "version": "1.0.0",
+  "description": "MCP Proxy Server — bridges client Agent to server Agent via WebSocket",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "siliconmate-proxy": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0"
+  }
+}

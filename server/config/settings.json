@@ -1,0 +1,20 @@
+{
+  "model": "glm-4-flash",
+  "customFetch": "require('/opt/siliconmate-server/glm-fetch-adapter/dist/index.js').createGlmFetch({apiKey: process.env.GLM_API_KEY, baseUrl: process.env.GLM_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4'})",
+  "systemPrompt": "你是硅侣服务端Agent，负责处理深度思考和Office文档任务。你可以使用AgentChat进行多AI协作，使用OfficeCLI处理Office文档。回答要简洁专业，直接给出结论。",
+  "enableAllProjectMcpServers": true,
+  "mcpServers": {
+    "agentchat": {
+      "command": "python3",
+      "args": ["/opt/siliconmate-server/agentchat/mcp-server/server.py"],
+      "env": {
+        "CHROME_CDP_URL": "http://127.0.0.1:9222"
+      }
+    },
+    "officecli": {
+      "command": "npx",
+      "args": ["-y", "officecli-mcp@latest"],
+      "env": {}
+    }
+  }
+}

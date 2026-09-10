@@ -1,0 +1,39 @@
+# Build artifacts
+target/
+dist/
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.so
+*.dylib
+
+# Binaries (too large for git)
+binaries/
+*.exe
+obscura-*
+
+# Generated
+gen/
+Cargo.lock
+
+# Environment
+.env
+.env.local
+*.p12
+*.p7b
+*.cer
+*.csr
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log

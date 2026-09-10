@@ -1,0 +1,17 @@
+{
+  "name": "glm-fetch-adapter",
+  "version": "1.0.0",
+  "description": "GLM Fetch Adapter — intercepts Anthropic SDK fetch, translates to GLM OpenAI-compatible format",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/test.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  }
+}

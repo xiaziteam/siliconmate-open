@@ -7,7 +7,37 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-mac:
+  build-mac-intel:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend deps
+        working-directory: client
+        run: npm ci
+
+      - name: Build Tauri app
+        working-directory: client
+        run: npx tauri build
+
+      - name: Upload DMG (Intel x64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: siliconmate-mac-intel
+          path: client/src-tauri/target/release/bundle/dmg/*.dmg
+          retention-days: 30
+
+  build-mac-arm:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,10 +60,10 @@ jobs:
         working-directory: client
         run: npx tauri build
 
-      - name: Upload DMG
+      - name: Upload DMG (Apple Silicon aarch64)
         uses: actions/upload-artifact@v4
         with:
-          name: siliconmate-mac
+          name: siliconmate-mac-arm
           path: client/src-tauri/target/release/bundle/dmg/*.dmg
           retention-days: 30
 

@@ -1,0 +1,182 @@
+name: Build All Platforms
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SERVER_HOST: ${{ secrets.SERVER_HOST }}
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Replace server host with secret
+        if: env.SERVER_HOST != ''
+        run: |
+          SERVER_HOST="${SERVER_HOST}" find . -type f \( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' -o -name '*.kt' \) \
+            ! -path '*/node_modules/*' ! -path '*/target/*' ! -path '*/.git/*' \
+            -exec sed -i "s/example\.com/${SERVER_HOST}/g" {} +
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.0.12077973"
+
+      - name: Install frontend deps
+        working-directory: client
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: client
+        run: npm run build
+
+      - name: Copy frontend to Android assets
+        run: |
+          mkdir -p android/app/src/main/assets/dist
+          cp -R client/dist/* android/app/src/main/assets/dist/
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.5'
+          validate-wrappers: false
+
+      - name: Build Debug APK
+        working-directory: android
+        run: gradle assembleDebug
+
+      - name: Upload APK to Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: android/app/build/outputs/apk/debug/*.apk
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SiliconMate-Android
+          path: android/app/build/outputs/apk/debug/*.apk
+
+  build-macos:
+    needs: build-android
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Replace server host with secret
+        if: env.SERVER_HOST != ''
+        run: |
+          SERVER_HOST="${SERVER_HOST}" find . -type f \( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' -o -name '*.kt' \) \
+            ! -path '*/node_modules/*' ! -path '*/target/*' ! -path '*/.git/*' \
+            -exec sed -i '' "s/example\.com/${SERVER_HOST}/g" {} +
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install frontend deps
+        working-directory: client
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: client
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client
+          tauriScript: npx tauri
+          tagName: v__VERSION__
+          releaseName: 'SiliconMate v__VERSION__'
+          releaseBody: '硅侣 v__VERSION__ — 全平台构建'
+          releaseDraft: true
+          args: --target aarch64-apple-darwin
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SiliconMate-macOS-arm64
+          path: client/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+
+  build-linux:
+    needs: build-android
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libappindicator3-dev librsvg2-dev patchelf libsoup-3.0-dev libjavascriptcoregtk-4.1-dev
+
+      - name: Replace server host with secret
+        if: env.SERVER_HOST != ''
+        run: |
+          SERVER_HOST="${SERVER_HOST}" find . -type f \( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' -o -name '*.kt' \) \
+            ! -path '*/node_modules/*' ! -path '*/target/*' ! -path '*/.git/*' \
+            -exec sed -i "s/example\.com/${SERVER_HOST}/g" {} +
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend deps
+        working-directory: client
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: client
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client
+          tauriScript: npx tauri
+          tagName: v__VERSION__
+          releaseName: 'SiliconMate v__VERSION__'
+          releaseBody: '硅侣 v__VERSION__ — Linux'
+          releaseDraft: true
+          args: ""
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SiliconMate-Linux
+          path: |
+            client/src-tauri/target/release/bundle/appimage/*.AppImage
+            client/src-tauri/target/release/bundle/deb/*.deb
+
+  publish-release:
+    needs: [build-android, build-macos, build-linux]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

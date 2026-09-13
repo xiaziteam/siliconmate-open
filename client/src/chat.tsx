@@ -12,7 +12,7 @@
 
 import React, { useState, useRef, useEffect } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { formatTime, formatFileSize, getGroupInfo, kickGroupMember, transferGroupOwner, setGroupMemberRole, updateGroup } from './smcp'
+import { formatTime, formatFileSize, getGroupInfo, kickGroupMember, transferGroupOwner, setGroupMemberRole, updateGroup, taskExecute, TaskResult, listCapabilities, CapabilityInfo } from './smcp'
 
 interface ImageAttachment {
   path: string
@@ -30,10 +30,40 @@ interface Message {
   content: string
   isStreaming: boolean
   timestamp: number
+  // Agent task result fields
+  execution_tier?: string   // "native" | "nuphus" | "freecode" | "fallback"
+  task_status?: string      // "success" | "error" | "rejected" | "timeout"
+  screenshots?: string[]    // base64 encoded
+  duration_ms?: number
+  error_message?: string
+  is_task_result?: boolean
+  // Multi-step execution (Computer Use)
+  steps?: TaskStep[]
+}
+
+interface TaskStep {
+  step_num: number
+  description: string
+  screenshot?: string
+  status: string
+}
+
+/** Agent能力tier样式配置 */
+const TIER_STYLES: Record<string, { icon: string; color: string; label: string }> = {
+  native: { icon: '⚡', color: '#4CAF50', label: '原生直通' },
+  nuphus: { icon: '🤖', color: '#2196F3', label: 'Nuphus引擎' },
+  freecode: { icon: '🧠', color: '#9C27B0', label: '深度思考' },
+  fallback: { icon: '⚠️', color: '#FF9800', label: '降级命令' },
+  multi_step: { icon: '🔄', color: '#00BCD4', label: '多步执行' },
+  none: { icon: '❌', color: '#f44336', label: '无' },
+}
+
+function getTierStyle(tier: string) {
+  return TIER_STYLES[tier] || TIER_STYLES.none
 }
 
 interface ChatProps {
-  onSendMessage: (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean, mentions?: string[]) => void
+  onSendMessage: (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean, mentions?: string[], taskCapability?: string, taskParams?: any) => void
   onVoiceChat: () => void
   status: 'idle' | 'thinking' | 'deep_thinking' | 'streaming' | 'error'
   deepThinkProgress?: string
@@ -89,9 +119,15 @@ export const Chat: React.FC<ChatProps> = ({
   const [searchQuery, setSearchQuery] = useState('')
   const [showMention, setShowMention] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
+  const [showCapabilities, setShowCapabilities] = useState(false)
+  const [capabilities, setCapabilities] = useState<CapabilityInfo[]>([])
+  const [taskApprovalRequest, setTaskApprovalRequest] = useState<any>(null)
+  const [activeMultiStepTask, setActiveMultiStepTask] = useState<string | null>(null)
+  const [multiStepSteps, setMultiStepSteps] = useState<TaskStep[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const invoke = (window as any).__TAURI__?.core?.invoke
+  const listen = (window as any).__TAURI__?.event?.listen
 
   // Microphone availability check via Web Speech API
   const [isRecording, setIsRecording] = useState(false)
@@ -110,14 +146,114 @@ export const Chat: React.FC<ChatProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Listen for task-result events from Tauri backend
+  useEffect(() => {
+    if (!listen || isSmcp) return
+
+    let unlistenTaskResult: (() => void) | null = null
+    let unlistenRemoteResult: (() => void) | null = null
+    let unlistenApproval: (() => void) | null = null
+    let unlistenTaskStep: (() => void) | null = null
+
+    // Local task execution result
+    listen('task-result', (event: any) => {
+      const result: TaskResult = event.payload
+      console.log('[chat] task-result event:', result)
+    }).then((fn: () => void) => { unlistenTaskResult = fn })
+
+    // Remote task result
+    listen('remote-task-result', (event: any) => {
+      const result = event.payload
+      console.log('[chat] remote-task-result:', result)
+    }).then((fn: () => void) => { unlistenRemoteResult = fn })
+
+    // Task approval request
+    listen('task-approval-request', (event: any) => {
+      const request = event.payload
+      setTaskApprovalRequest(request)
+    }).then((fn: () => void) => { unlistenApproval = fn })
+
+    // Multi-step task progress (Computer Use)
+    listen('task-step', (event: any) => {
+      const { task_id, step } = event.payload
+      if (task_id && step) {
+        setActiveMultiStepTask(task_id)
+        setMultiStepSteps(prev => [...prev, {
+          step_num: step.step_num,
+          description: step.action || step.capability,
+          screenshot: step.screenshot,
+          status: step.status,
+        }])
+      }
+    }).then((fn: () => void) => { unlistenTaskStep = fn })
+
+    return () => {
+      if (unlistenTaskResult) unlistenTaskResult()
+      if (unlistenRemoteResult) unlistenRemoteResult()
+      if (unlistenApproval) unlistenApproval()
+      if (unlistenTaskStep) unlistenTaskStep()
+    }
+  }, [listen, isSmcp])
+
   const handleSend = () => {
     const text = input.trim()
     if (!text && imageAttachments.length === 0) return
     // 提取@提及的成员名
     const mentions = text.match(/@(\S+)/g)?.map(m => m.slice(1)) || []
+
+    // Agent指令识别：检测task关键词，拦截到task_execute
+    const taskCapability = detectAgentCommand(text)
+    if (taskCapability && !isSmcp && invoke) {
+      // 构建task params
+      const taskParams = buildTaskParams(taskCapability, text)
+      // 执行task，由App.tsx的onSendMessage处理路由
+      onSendMessage(text, imageAttachments.length > 0 ? imageAttachments : undefined, deepThinkMode, feishuOutput, mentions.length > 0 ? mentions : undefined, taskCapability, taskParams)
+      setInput('')
+      setImageAttachments([])
+      return
+    }
+
     onSendMessage(text, imageAttachments.length > 0 ? imageAttachments : undefined, deepThinkMode, feishuOutput, mentions.length > 0 ? mentions : undefined)
     setInput('')
     setImageAttachments([])
+  }
+
+  /** Agent指令识别：关键词匹配 */
+  const detectAgentCommand = (text: string): string | null => {
+    const lower = text.toLowerCase()
+    if (lower.includes('截屏') || lower.includes('截图') || lower.includes('screenshot')) return 'screenshot'
+    if (lower.includes('打开')) return 'app.open'
+    if (lower.includes('读文件') || lower.includes('读取文件')) return 'file.read'
+    if (lower.includes('执行') || lower.includes('运行') || lower.includes('跑一下')) return 'shell.exec'
+    if (lower.includes('识别文字') || lower.includes('文字识别') || lower.includes('ocr')) return 'ocr'
+    if (lower.includes('发到飞书') || lower.includes('发飞书') || lower.includes('发送飞书')) return 'feishu.send'
+    if (lower.includes('你能做什么') || lower.includes('你会什么') || lower.includes('列出能力')) return 'list_capabilities'
+    return null
+  }
+
+  /** 构建task参数 */
+  const buildTaskParams = (capability: string, text: string): any => {
+    const lower = text.toLowerCase()
+    switch (capability) {
+      case 'screenshot':
+        return {}
+      case 'app.open': {
+        const appName = text.replace(/打开|开启|启动/gi, '').trim()
+        return { app_name: appName }
+      }
+      case 'file.read': {
+        const pathMatch = text.match(/读(?:取)?文件?\s*(.+)/)
+        return { path: pathMatch ? pathMatch[1].trim() : '' }
+      }
+      case 'shell.exec': {
+        const cmdMatch = text.match(/(?:执行|运行|跑一下)\s*(.+)/)
+        return { command: cmdMatch ? cmdMatch[1].trim() : '' }
+      }
+      case 'ocr':
+        return { image_path: '' }
+      default:
+        return {}
+    }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -183,11 +319,14 @@ export const Chat: React.FC<ChatProps> = ({
     }
   })()
 
+  // 移动端自适应：窄屏隐藏非核心按钮，避免输入栏挤爆（横屏已锁定，宽度仅在键盘弹出外不变）
+  const isMobile = typeof window !== 'undefined' && window.innerWidth <= 480
+
   return (
     <div style={{
       display: 'flex',
       flexDirection: 'column',
-      height: '100vh',
+      height: '100%',
       background: '#0f1115',
       color: '#e6e6e6',
       fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif',
@@ -195,6 +334,7 @@ export const Chat: React.FC<ChatProps> = ({
       {/* Header */}
       <header style={{
         padding: '14px 20px',
+        paddingLeft: typeof window !== 'undefined' && window.innerWidth <= 480 ? '52px' : '20px',
         background: 'linear-gradient(90deg, #1a2a4a, #0f1115)',
         borderBottom: '1px solid #222',
         display: 'flex',
@@ -478,6 +618,17 @@ export const Chat: React.FC<ChatProps> = ({
           // Detect group sender name (pattern: 👥 senderName: content or 🦐 prefix)
           const groupSenderMatch = isSmcp && !isUser && msg.content.match(/^(👥|🦐)\s*([^\s:：]+)[：:]\s*([\s\S]*)$/)
 
+          // Task result message styling
+          const isTaskResult = msg.is_task_result === true
+          const tierIcon = msg.execution_tier === 'native' ? '⚡' :
+                           msg.execution_tier === 'nuphus' ? '🤖' :
+                           msg.execution_tier === 'freecode' ? '🧠' :
+                           msg.execution_tier === 'fallback' ? '⚠️' : ''
+          const tierBorder = msg.execution_tier === 'native' ? '#4CAF50' :
+                             msg.execution_tier === 'nuphus' ? '#2196F3' :
+                             msg.execution_tier === 'freecode' ? '#9C27B0' :
+                             msg.execution_tier === 'fallback' ? '#FF9800' : ''
+
           return (
             <div
               key={msg.id}
@@ -501,21 +652,81 @@ export const Chat: React.FC<ChatProps> = ({
               )}
               <div
                 style={{
-                  maxWidth: '70%',
+                  maxWidth: isTaskResult ? '85%' : '70%',
                   padding: '10px 14px',
                   borderRadius: '10px',
                   lineHeight: '1.6',
                   fontSize: '14px',
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
-                  background: isUser ? '#2a5cff' : '#2a2a3a',
+                  background: isUser ? '#2a5cff' :
+                             isTaskResult ? '#1a2a1a' : '#2a2a3a',
                   color: '#fff',
                   borderBottomRightRadius: isUser ? '4px' : undefined,
                   borderBottomLeftRadius: !isUser ? '4px' : undefined,
                   opacity: isSearchDim ? 0.3 : 1,
+                  ...(isTaskResult && tierBorder ? { borderLeft: `3px solid ${tierBorder}` } : {}),
                 }}
               >
-                {isFileMsg ? (
+                {isTaskResult ? (
+                  /* Task result message rendering */
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '16px' }}>{tierIcon}</span>
+                      <span style={{ fontWeight: 600, color: tierBorder || '#fff' }}>
+                        {msg.task_status === 'success' ? '执行成功' :
+                         msg.task_status === 'error' ? '执行失败' :
+                         msg.task_status === 'rejected' ? '已拒绝' :
+                         msg.task_status === 'timeout' ? '超时' : msg.task_status}
+                      </span>
+                      {msg.duration_ms != null && (
+                        <span style={{ fontSize: '11px', color: '#aaa' }}>
+                          ({msg.duration_ms < 1000 ? `${msg.duration_ms}ms` : `${(msg.duration_ms / 1000).toFixed(1)}秒`})
+                        </span>
+                      )}
+                    </div>
+                    <div>{msg.content}</div>
+                    {/* Screenshots */}
+                    {msg.screenshots && msg.screenshots.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
+                        {msg.screenshots.map((src, i) => (
+                          <img key={i} src={`data:image/png;base64,${src}`}
+                            style={{ maxWidth: '100%', borderRadius: '4px', border: '1px solid #333' }}
+                            alt={`截图 ${i + 1}`}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {/* Multi-step execution */}
+                    {msg.steps && msg.steps.length > 0 && (
+                      <div style={{ marginTop: '6px' }}>
+                        {msg.steps.map((step, i) => (
+                          <div key={i} style={{
+                            background: '#0f1115',
+                            borderRadius: '4px',
+                            padding: '4px 8px',
+                            marginBottom: '4px',
+                            borderLeft: '2px solid #2a5cff',
+                          }}>
+                            <span style={{ fontSize: '11px', color: '#7a8aa0' }}>步骤{step.step_num}:</span>
+                            <span style={{ fontSize: '12px', marginLeft: '4px' }}>{step.description}</span>
+                            {step.screenshot && (
+                              <img src={`data:image/png;base64,${step.screenshot}`}
+                                style={{ maxWidth: '100%', borderRadius: '4px', marginTop: '2px' }}
+                                alt={`步骤${step.step_num}`}
+                              />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {msg.error_message && (
+                      <div style={{ color: '#e74c3c', fontSize: '12px', marginTop: '4px' }}>
+                        ⚠️ {msg.error_message}
+                      </div>
+                    )}
+                  </div>
+                ) : isFileMsg ? (
                   <div
                     onClick={() => {
                       if (fileMatch) {
@@ -724,9 +935,9 @@ export const Chat: React.FC<ChatProps> = ({
 
       <div style={{
         display: 'flex',
-        padding: '14px 20px',
+        padding: isMobile ? '10px 10px' : '14px 20px',
         borderTop: '1px solid #222',
-        gap: '10px',
+        gap: isMobile ? '6px' : '10px',
       }}>
         {/* SMCP标识 */}
         {isSmcp && (
@@ -763,8 +974,8 @@ export const Chat: React.FC<ChatProps> = ({
           📎
         </button>
 
-        {/* Voice chat button — only for local chat */}
-        {!isSmcp && (
+        {/* Voice chat button — only for local chat, desktop only */}
+        {!isSmcp && !isMobile && (
         <button
           onClick={onVoiceChat}
           title={isVoiceMode ? '返回日常对话' : '语音聊天'}
@@ -782,8 +993,8 @@ export const Chat: React.FC<ChatProps> = ({
         </button>
         )}
 
-        {/* ChatGPT button — only for local chat */}
-        {!isSmcp && (
+        {/* ChatGPT button — only for local chat, desktop only */}
+        {!isSmcp && !isMobile && (
         <button
           onClick={async () => {
             const invoke = (window as any).__TAURI__?.core?.invoke
@@ -812,8 +1023,8 @@ export const Chat: React.FC<ChatProps> = ({
         </button>
         )}
 
-        {/* Deep think toggle — only for local chat */}
-        {!isSmcp && (
+        {/* Deep think toggle — only for local chat, desktop only */}
+        {!isSmcp && !isMobile && (
         <button
           onClick={() => {
             if (!serverConnected && !serverConnecting) {
@@ -840,8 +1051,8 @@ export const Chat: React.FC<ChatProps> = ({
         </button>
         )}
 
-        {/* Feishu output toggle — only for local chat */}
-        {!isSmcp && (
+        {/* Feishu output toggle — only for local chat, desktop only */}
+        {!isSmcp && !isMobile && (
         <button
           onClick={() => setFeishuOutput(!feishuOutput)}
           title={feishuOutput ? '关闭飞书输出' : '输出到飞书文档/消息'}
@@ -916,6 +1127,7 @@ export const Chat: React.FC<ChatProps> = ({
           autoFocus
           style={{
             flex: 1,
+            minWidth: 0,
             background: '#1c2030',
             border: '1px solid #333',
             borderRadius: '10px',
@@ -935,10 +1147,11 @@ export const Chat: React.FC<ChatProps> = ({
             color: '#fff',
             border: 'none',
             borderRadius: '10px',
-            padding: '0 22px',
+            padding: isMobile ? '0 14px' : '0 22px',
             fontSize: '14px',
             cursor: (status === 'thinking' || status === 'deep_thinking') ? 'not-allowed' : 'pointer',
             opacity: (status === 'thinking' || status === 'deep_thinking') ? 0.6 : 1,
+            flexShrink: 0,
           }}
         >
           {isSmcp ? '🦐 发送' : '发送'}

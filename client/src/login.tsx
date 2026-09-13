@@ -177,6 +177,8 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
       alignItems: 'center',
       justifyContent: 'center',
       height: '100vh',
+      padding: '16px',
+      overflowY: 'auto',
       background: '#0f1115',
       color: '#e6e6e6',
       fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif',
@@ -184,8 +186,9 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
       <div style={{
         background: '#1a1d25',
         borderRadius: '16px',
-        padding: '40px',
+        padding: '40px 24px',
         width: '360px',
+        maxWidth: '100%',
         boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
       }}>
         <h1 style={{ fontSize: '28px', fontWeight: 600, marginBottom: '8px', textAlign: 'center' }}>

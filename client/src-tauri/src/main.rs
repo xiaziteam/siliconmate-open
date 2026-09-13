@@ -21,6 +21,11 @@ pub mod tunnel;
 pub mod voice_input;
 pub mod feishu_output;
 pub mod smcp;
+// Agent capability modules (硅侣Agent能力升级)
+pub mod task_engine;
+pub mod nuphus_bridge;
+pub mod native_cmds;
+pub mod permission;
 
 use account::{AppCtx, SessionState};
 
@@ -60,6 +65,10 @@ fn main() {
         .manage(obscura::ObscuraManager::new())
         .manage(tunnel::TunnelManager::new())
         .manage(smcp::SmcpState::new())
+        .manage(task_engine::TaskEngine::new())
+        .manage(nuphus_bridge::NuphusBridge::new())
+        .manage(native_cmds::NativeCmdState::new())
+        .manage(permission::PermissionStore::new())
         .manage(server_connector::ServerConnector::new(
             std::env::var("SILICONMATE_SERVER_HOST")
                 .unwrap_or_else(|_| "example.com".into()),
@@ -122,6 +131,7 @@ fn main() {
             // SMCP
             smcp::smcp_register,
             smcp::smcp_agent_list,
+            smcp::smcp_friend_capabilities,
             smcp::smcp_message_send,
             smcp::smcp_message_poll,
             smcp::smcp_friend_request,
@@ -146,6 +156,33 @@ fn main() {
             smcp::smcp_group_update,
             smcp::smcp_file_upload,
             smcp::read_file_base64,
+            // Task Engine (Agent capability execution)
+            task_engine::task_execute,
+            task_engine::task_send,
+            task_engine::task_result_poll,
+            task_engine::task_list_capabilities,
+            task_engine::task_cancel,
+            task_engine::task_check_timeouts,
+            task_engine::task_get_pending_remote,
+            task_engine::task_remove_pending_remote,
+            task_engine::task_multi_step_execute,
+            // Nuphus Bridge (Computer Use engine)
+            nuphus_bridge::nuphus_screenshot,
+            nuphus_bridge::nuphus_execute,
+            nuphus_bridge::nuphus_status,
+            nuphus_bridge::nuphus_ocr,
+            // Native Commands (macOS direct)
+            native_cmds::native_screenshot,
+            native_cmds::native_open_app,
+            native_cmds::native_shell_exec,
+            native_cmds::native_read_file,
+            // Permission (remote task approval)
+            permission::permission_check,
+            permission::permission_set,
+            permission::permission_list,
+            // SMCP Task/Result protocol
+            smcp::smcp_task_send,
+            smcp::smcp_task_result_send,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

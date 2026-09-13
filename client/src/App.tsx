@@ -24,7 +24,7 @@ import {
   SmcpTarget,
   SmcpGroupTarget,
 } from './conversation'
-import { smcpInit, startPolling, stopPolling, sendMessage as smcpSendMessage, sendGroupMessage, uploadFile, SmcpMessage } from './smcp'
+import { smcpInit, startPolling, stopPolling, sendMessage as smcpSendMessage, sendGroupMessage, uploadFile, SmcpMessage, taskExecute, TaskResult, listCapabilities, CapabilityInfo, taskCheckTimeouts, taskRemovePendingRemote, taskResultSend, permissionSet } from './smcp'
 
 interface ImageAttachment {
   path: string
@@ -49,6 +49,9 @@ export const App: React.FC = () => {
   const [chatgptSession, setChatgptSession] = useState<{ access_token: string; cookies: any; expires: string } | null>(null)
   const [isVoiceMode, setIsVoiceMode] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  // 移动端自适应：窄屏(<=480px)时侧栏变为抽屉式
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 480)
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
   const [activated, setActivated] = useState(false)
   const [activationPlan, setActivationPlan] = useState<string | null>(null)
   const [deepThinkProgress, setDeepThinkProgress] = useState<string>('')
@@ -56,6 +59,12 @@ export const App: React.FC = () => {
   const [serverConnecting, setServerConnecting] = useState(false)
   const [smcpReady, setSmcpReady] = useState(false)
   const [mySiliconId, setMySiliconId] = useState<string>('')
+  const [taskApprovalRequest, setTaskApprovalRequest] = useState<{
+    task_id: string
+    from_agent: string
+    capability: string
+    params: any
+  } | null>(null)
   const invoke = (window as any).__TAURI__?.core?.invoke
   const listen = (window as any).__TAURI__?.event?.listen
 
@@ -66,6 +75,17 @@ export const App: React.FC = () => {
   useEffect(() => {
     saveConversations(conversations)
   }, [conversations])
+
+  // 移动端自适应：监听窗口宽度变化
+  useEffect(() => {
+    const onResize = () => {
+      const mobile = window.innerWidth <= 480
+      setIsMobile(mobile)
+      if (!mobile) setMobileDrawerOpen(false)
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
 
   // Start heartbeat on login
   useEffect(() => {
@@ -173,6 +193,24 @@ export const App: React.FC = () => {
     return () => { if (unlisten) unlisten() }
   }, [listen])
 
+  // Listen for task-approval-request events (from remote task received by smcp_poll)
+  useEffect(() => {
+    if (!listen) return
+    let unlisten: (() => void) | null = null
+    listen('task-approval-request', (event: any) => {
+      const data = event.payload
+      if (data?.task_id && data?.capability) {
+        setTaskApprovalRequest({
+          task_id: data.task_id,
+          from_agent: data.from_agent || '',
+          capability: data.capability,
+          params: data.params || {},
+        })
+      }
+    }).then((fn: () => void) => { unlisten = fn })
+    return () => { if (unlisten) unlisten() }
+  }, [listen])
+
   const handleLoginSuccess = async (sid: string, session?: { access_token: string; cookies: any; expires: string }, isActivated?: boolean, plan?: string, siliconId?: string) => {
     setSessionId(sid)
     if (session) setChatgptSession(session)
@@ -190,6 +228,21 @@ export const App: React.FC = () => {
         startPolling((msg: SmcpMessage) => {
           handleSmcpIncomingMessage(msg)
         })
+        // 启动远程task超时检查（每5分钟检查一次）
+        if (invoke) {
+          const timeoutInterval = setInterval(async () => {
+            try {
+              const expired = await invoke('task_check_timeouts') as string[]
+              if (expired && expired.length > 0) {
+                console.log('[TaskEngine] 超时任务已清理:', expired)
+              }
+            } catch (e) {
+              console.warn('[TaskEngine] 超时检查失败:', e)
+            }
+          }, 5 * 60 * 1000) // 5分钟
+          // Store for cleanup (note: in production, would need proper cleanup)
+          ;(window as any).__taskTimeoutChecker = timeoutInterval
+        }
       }
     }).catch(e => {
       console.warn('[硅侣] SMCP初始化失败:', e)
@@ -206,6 +259,57 @@ export const App: React.FC = () => {
     setActivated(true)
     setActivationPlan(plan)
   }, [])
+
+  /** 处理远程任务审批：允许/始终允许/拒绝 */
+  const handleTaskApproval = useCallback(async (action: 'allow' | 'always' | 'reject') => {
+    if (!taskApprovalRequest || !invoke) return
+    const { task_id, from_agent, capability, params } = taskApprovalRequest
+
+    // 移除挂起的远程task（无论结果如何）
+    await taskRemovePendingRemote(task_id)
+
+    if (action === 'reject') {
+      // 回传拒绝结果
+      await taskResultSend(from_agent, '', task_id, 'rejected', {}, [], 'none', 0, '用户拒绝执行')
+      setTaskApprovalRequest(null)
+      return
+    }
+
+    // 始终允许 → 更新权限策略
+    if (action === 'always') {
+      await permissionSet(from_agent, capability, 'allow')
+    }
+
+    // 执行任务
+    setTaskApprovalRequest(null)
+    try {
+      const result = await taskExecute(capability, params)
+
+      // 截图转base64（如果执行了screenshot）
+      let screenshots: string[] = result.screenshots || []
+      if (capability === 'screenshot' && result.status === 'success') {
+        if (result.data?.path) {
+          try {
+            const b64 = await invoke('read_file_base64', { path: result.data.path }) as string
+            screenshots = [b64]
+          } catch (e) {
+            console.warn('[TaskApproval] screenshot base64 read failed:', e)
+          }
+        }
+      }
+
+      // 回传结果
+      await taskResultSend(
+        from_agent, '',
+        task_id, result.status, result.data,
+        screenshots, result.execution_tier, result.duration_ms,
+        result.error_message || '',
+      )
+    } catch (e: any) {
+      // 执行失败，回传错误
+      await taskResultSend(from_agent, '', task_id, 'error', {}, [], 'none', 0, String(e))
+    }
+  }, [taskApprovalRequest, invoke])
 
   const updateConversation = useCallback((id: string, updater: (c: Conversation) => Conversation) => {
     setConversations(prev => prev.map(c => c.id === id ? updater(c) : c))
@@ -250,6 +354,86 @@ export const App: React.FC = () => {
 
   /** SMCP: 收到中继消息，放入对应对话 */
   const handleSmcpIncomingMessage = useCallback((msg: SmcpMessage) => {
+    const msgType = msg.type || msg.msg_type || 'notify'
+
+    // Task/Result消息：特殊处理
+    if (msgType === 'task') {
+      // 收到远程任务请求 → 触发审批流程
+      const capability = msg.params?.capability || ''
+      const taskId = msg.params?.task_id || ''
+      const from = msg.params?.from || msg.from_agent || ''
+      setTaskApprovalRequest({
+        task_id: taskId,
+        from_agent: from,
+        capability,
+        params: msg.params?.params || {},
+      })
+      return // 不进入聊天UI
+    }
+
+    if (msgType === 'result') {
+      // 收到远程任务结果 → 放入对应对话
+      const taskId = msg.params?.task_id || ''
+      const status = msg.params?.status || 'unknown'
+      const data = msg.params?.data || {}
+      const tier = msg.params?.execution_tier || 'unknown'
+      const durationMs = msg.params?.duration_ms || 0
+      const fromAgent = msg.from_agent || ''
+      const screenshots = msg.params?.screenshots || []
+
+      let resultContent = ''
+      if (status === 'success') {
+        resultContent = `✅ 远程任务完成 (${tier}层, ${durationMs < 1000 ? durationMs + 'ms' : (durationMs / 1000).toFixed(1) + '秒'})`
+        if (data?.stdout) resultContent += `\n${data.stdout}`
+        if (data?.text) resultContent += `\n${data.text}`
+        if (data?.path) resultContent += `\n截图: ${data.path}`
+      } else if (status === 'rejected') {
+        resultContent = `🚫 远程任务被拒绝`
+      } else if (status === 'timeout') {
+        resultContent = `⏰ 远程任务审批超时`
+      } else {
+        resultContent = `❌ 远程任务失败: ${msg.params?.error_message || '未知错误'}`
+      }
+
+      const resultMsg: Message = {
+        id: `result_${taskId}_${Date.now()}`,
+        role: 'assistant',
+        content: resultContent,
+        isStreaming: false,
+        timestamp: Date.now(),
+        is_task_result: true,
+        execution_tier: tier,
+        task_status: status,
+        screenshots,
+        duration_ms: durationMs,
+        error_message: msg.params?.error_message || undefined,
+      }
+
+      // 找到对应好友对话放入结果
+      setConversations(prev => {
+        const targetConv = prev.find(c =>
+          c.smcpTarget && c.smcpTarget.agentId === fromAgent
+        )
+        if (targetConv) {
+          return prev.map(c =>
+            c.id === targetConv.id ? addMessage(c, resultMsg) : c
+          )
+        } else {
+          // 创建新对话放结果
+          const smcpTarget: SmcpTarget = {
+            userId: '',
+            agentId: fromAgent,
+            role: fromAgent,
+            myAgentId: '',
+          }
+          const conv = createConversation(undefined, smcpTarget)
+          const updatedConv = addMessage(conv, resultMsg)
+          return [updatedConv, ...prev]
+        }
+      })
+      return
+    }
+
     const fromAgentId = msg.from_agent || ''
     const groupId = msg.params?.group_id
     const text = msg.params?.text || msg.params?.content || msg.params?.message || ''
@@ -355,7 +539,7 @@ export const App: React.FC = () => {
     }
   }, [activeConvId])
 
-  const handleSendMessage = useCallback(async (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean, mentions?: string[]) => {
+  const handleSendMessage = useCallback(async (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean, mentions?: string[], taskCapability?: string, taskParams?: any) => {
     if (!text.trim() && (!attachments || attachments.length === 0)) return
 
     let convId = activeConvId
@@ -493,6 +677,110 @@ export const App: React.FC = () => {
 
     // --- 本地AI对话: 原有逻辑 ---
 
+    // 检查是否是Agent指令（task_capability由chat.tsx检测后传入）
+    if (taskCapability && invoke) {
+      setStatus('thinking')
+
+      // "你能做什么"指令特殊处理
+      if (taskCapability === 'list_capabilities') {
+        try {
+          const caps = await invoke('task_list_capabilities') as CapabilityInfo[]
+          const grouped = {
+            native: caps.filter(c => c.tier === 'native' && c.available),
+            nuphus: caps.filter(c => c.tier === 'nuphus' && c.available),
+            fallback: caps.filter(c => c.tier === 'fallback' && c.available),
+          }
+          let response = '🦐 我的本机能力：\n\n'
+          if (grouped.native.length > 0) {
+            response += '⚡ 原生直通（秒级响应）：\n'
+            grouped.native.forEach(c => { response += `  • ${c.name} — ${c.description}\n` })
+            response += '\n'
+          }
+          if (grouped.nuphus.length > 0) {
+            response += '🤖 Nuphus引擎（需模型）：\n'
+            grouped.nuphus.forEach(c => { response += `  • ${c.name} — ${c.description}\n` })
+            response += '\n'
+          }
+          if (grouped.fallback.length > 0) {
+            response += '⚠️ 降级命令（Nuphus不可用时）：\n'
+            grouped.fallback.forEach(c => { response += `  • ${c.name} — ${c.description}\n` })
+          }
+          const botMsg: Message = {
+            id: `bot_${Date.now()}`,
+            role: 'assistant',
+            content: response,
+            isStreaming: false,
+            timestamp: Date.now(),
+            is_task_result: true,
+            execution_tier: 'native',
+            task_status: 'success',
+          }
+          updateConversation(convId!, c => addMessage(c, botMsg))
+        } catch (e: any) {
+          const errMsg: Message = {
+            id: `err_${Date.now()}`,
+            role: 'assistant',
+            content: `⚠️ 查询能力失败: ${String(e)}`,
+            isStreaming: false,
+            timestamp: Date.now(),
+          }
+          updateConversation(convId!, c => addMessage(c, errMsg))
+        }
+        setStatus('idle')
+        return
+      }
+
+      // 执行task
+      try {
+        const result = await invoke('task_execute', {
+          capability: taskCapability,
+          params: taskParams || {},
+        }) as TaskResult
+
+        let content = ''
+        if (result.status === 'success') {
+          if (taskCapability === 'screenshot') content = '已截屏'
+          else if (taskCapability === 'app.open') content = `已打开 ${taskParams?.app_name || '应用'}`
+          else if (taskCapability === 'file.read') content = result.data?.content || '文件已读取'
+          else if (taskCapability === 'shell.exec') content = result.data?.stdout || '命令已执行'
+          else if (taskCapability === 'ocr') content = result.data?.text || 'OCR完成'
+          else content = '执行成功'
+        } else {
+          content = result.error_message || '执行失败'
+        }
+
+        const botMsg: Message = {
+          id: `bot_${Date.now()}`,
+          role: 'assistant',
+          content,
+          isStreaming: false,
+          timestamp: Date.now(),
+          is_task_result: true,
+          execution_tier: result.execution_tier,
+          task_status: result.status,
+          screenshots: result.screenshots,
+          duration_ms: result.duration_ms,
+          error_message: result.error_message || undefined,
+        }
+        updateConversation(convId!, c => addMessage(c, botMsg))
+        setStatus('idle')
+      } catch (e: any) {
+        const errMsg: Message = {
+          id: `err_${Date.now()}`,
+          role: 'assistant',
+          content: `⚠️ 执行失败: ${String(e)}`,
+          isStreaming: false,
+          timestamp: Date.now(),
+          is_task_result: true,
+          execution_tier: 'none',
+          task_status: 'error',
+        }
+        updateConversation(convId!, c => addMessage(c, errMsg))
+        setStatus('error')
+      }
+      return
+    }
+
     let ocrContext: string | undefined
     if (attachments && attachments.length > 0) {
       const ocrParts: string[] = []
@@ -571,6 +859,59 @@ export const App: React.FC = () => {
           response = `⚠️ ${reason}\n\n${response}`
         } else if (routeResult?.ObscuraBridge) {
           response = '语音聊天模式已激活'
+        } else if (routeResult?.TaskRoute) {
+          // Task路由：执行Agent能力
+          const capability = routeResult.TaskRoute.capability || ''
+          setStatus('thinking')
+          try {
+            // 构建task params
+            let taskParams: any = {}
+            if (capability === 'app.open') {
+              const appName = text.replace(/打开|开启|启动/gi, '').trim()
+              taskParams = { app_name: appName }
+            } else if (capability === 'shell.exec') {
+              const cmdMatch = text.match(/(?:执行|运行|跑一下)\s*(.+)/)
+              taskParams = { command: cmdMatch ? cmdMatch[1].trim() : text }
+            } else if (capability === 'file.read') {
+              const pathMatch = text.match(/读(?:取)?文件?\s*(.+)/)
+              taskParams = { path: pathMatch ? pathMatch[1].trim() : '' }
+            }
+
+            const result = await invoke('task_execute', {
+              capability,
+              params: taskParams,
+            }) as TaskResult
+
+            if (result.status === 'success') {
+              if (capability === 'screenshot') response = '已截屏'
+              else if (capability === 'app.open') response = `已打开 ${taskParams.app_name || '应用'}`
+              else if (capability === 'file.read') response = result.data?.content || '文件已读取'
+              else if (capability === 'shell.exec') response = result.data?.stdout || '命令已执行'
+              else response = '执行成功'
+            } else {
+              response = result.error_message || '执行失败'
+            }
+
+            // Add as task result message with tier info
+            const taskBotMsg: Message = {
+              id: `bot_${Date.now()}`,
+              role: 'assistant',
+              content: response,
+              isStreaming: false,
+              timestamp: Date.now(),
+              is_task_result: true,
+              execution_tier: result.execution_tier,
+              task_status: result.status,
+              screenshots: result.screenshots,
+              duration_ms: result.duration_ms,
+              error_message: result.error_message || undefined,
+            }
+            updateConversation(convId!, c => addMessage(c, taskBotMsg))
+            setStatus('idle')
+            return // skip the generic bot message below
+          } catch (e: any) {
+            response = `⚠️ 执行失败: ${String(e)}`
+          }
         } else if (routeResult?.ShrimpAgent) {
           const agentId = routeResult.ShrimpAgent.agent_id || 'goutou'
           const task = routeResult.ShrimpAgent.task || text
@@ -682,23 +1023,75 @@ export const App: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw' }}>
-      <Sidebar
-        conversations={conversations}
-        activeId={activeConvId}
-        onSelect={handleSelectConversation}
-        onNew={handleNewConversation}
-        onDelete={handleDeleteConversation}
-        collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(prev => !prev)}
-        activated={activated}
-        plan={activationPlan}
-        onActivate={handleActivate}
-        onOpenSmcpChat={handleOpenSmcpChat}
-        onOpenGroupChat={handleOpenGroupChat}
-        accountId={sessionId}
-        mySiliconId={mySiliconId}
-      />
-      <div style={{ flex: 1, overflow: 'hidden' }}>
+      {/* 桌面端：侧栏内联 */}
+      {!isMobile && (
+        <Sidebar
+          conversations={conversations}
+          activeId={activeConvId}
+          onSelect={handleSelectConversation}
+          onNew={handleNewConversation}
+          onDelete={handleDeleteConversation}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(prev => !prev)}
+          activated={activated}
+          plan={activationPlan}
+          onActivate={handleActivate}
+          onOpenSmcpChat={handleOpenSmcpChat}
+          onOpenGroupChat={handleOpenGroupChat}
+          accountId={sessionId}
+          mySiliconId={mySiliconId}
+        />
+      )}
+      {/* 移动端：抽屉式侧栏（点遮罩/选中会话自动关闭） */}
+      {isMobile && mobileDrawerOpen && (
+        <>
+          <div
+            onClick={() => setMobileDrawerOpen(false)}
+            style={{
+              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+              background: 'rgba(0,0,0,0.6)', zIndex: 9998,
+            }}
+          />
+          <div style={{
+            position: 'fixed', top: 0, left: 0, bottom: 0,
+            width: '240px', zIndex: 9999,
+            boxShadow: '4px 0 24px rgba(0,0,0,0.55)',
+          }}>
+            <Sidebar
+              conversations={conversations}
+              activeId={activeConvId}
+              onSelect={(id) => { handleSelectConversation(id); setMobileDrawerOpen(false) }}
+              onNew={() => { handleNewConversation(); setMobileDrawerOpen(false) }}
+              onDelete={handleDeleteConversation}
+              collapsed={false}
+              onToggleCollapse={() => setMobileDrawerOpen(false)}
+              activated={activated}
+              plan={activationPlan}
+              onActivate={handleActivate}
+              onOpenSmcpChat={(t) => { handleOpenSmcpChat(t); setMobileDrawerOpen(false) }}
+              onOpenGroupChat={(g, n) => { handleOpenGroupChat(g, n); setMobileDrawerOpen(false) }}
+              accountId={sessionId}
+              mySiliconId={mySiliconId}
+            />
+          </div>
+        </>
+      )}
+      <div style={{ flex: 1, overflow: 'hidden', position: 'relative', minWidth: 0 }}>
+        {/* 移动端汉堡按钮呼出抽屉 */}
+        {isMobile && (
+          <button
+            onClick={() => setMobileDrawerOpen(true)}
+            title="菜单"
+            style={{
+              position: 'absolute', top: '8px', left: '8px', zIndex: 100,
+              width: '34px', height: '34px', borderRadius: '8px',
+              background: 'rgba(42,42,58,0.92)', color: '#e6e6e6',
+              border: 'none', fontSize: '16px', cursor: 'pointer',
+            }}
+          >
+            ≡
+          </button>
+        )}
         <Chat
           onSendMessage={handleSendMessage}
           onVoiceChat={handleVoiceChat}
@@ -713,6 +1106,98 @@ export const App: React.FC = () => {
           myUserId={sessionId}
         />
       </div>
+      {/* 远程任务审批弹窗 */}
+      {taskApprovalRequest && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          background: 'rgba(0,0,0,0.6)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 10000,
+        }}>
+          <div style={{
+            background: '#1e1e2e',
+            borderRadius: '12px',
+            padding: '24px',
+            minWidth: '360px',
+            maxWidth: '480px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+            border: '1px solid #333',
+          }}>
+            <div style={{ fontSize: '16px', fontWeight: 600, color: '#fff', marginBottom: '12px' }}>
+              🔔 远程任务请求
+            </div>
+            <div style={{ fontSize: '14px', color: '#ccc', marginBottom: '8px' }}>
+              来自 <span style={{ color: '#4fc3f7', fontWeight: 600 }}>{taskApprovalRequest.from_agent}</span> 的请求
+            </div>
+            <div style={{
+              background: '#2a2a3a',
+              borderRadius: '8px',
+              padding: '12px',
+              marginBottom: '16px',
+            }}>
+              <div style={{ fontSize: '13px', color: '#aaa', marginBottom: '4px' }}>请求操作</div>
+              <div style={{ fontSize: '15px', color: '#fff', fontWeight: 500 }}>
+                {taskApprovalRequest.capability === 'screenshot' ? '📸 截取屏幕' :
+                 taskApprovalRequest.capability === 'app.open' ? `📱 打开应用 ${taskApprovalRequest.params?.app_name || ''}` :
+                 taskApprovalRequest.capability === 'file.read' ? `📄 读取文件 ${taskApprovalRequest.params?.path || ''}` :
+                 taskApprovalRequest.capability === 'shell.exec' ? `💻 执行命令 ${taskApprovalRequest.params?.command || ''}` :
+                 taskApprovalRequest.capability === 'ocr' ? '🔍 OCR识别' :
+                 `🔧 ${taskApprovalRequest.capability}`}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => handleTaskApproval('reject')}
+                style={{
+                  padding: '8px 20px',
+                  borderRadius: '6px',
+                  border: '1px solid #555',
+                  background: '#333',
+                  color: '#e74c3c',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                }}
+              >
+                拒绝
+              </button>
+              <button
+                onClick={() => handleTaskApproval('allow')}
+                style={{
+                  padding: '8px 20px',
+                  borderRadius: '6px',
+                  border: 'none',
+                  background: '#2a5cff',
+                  color: '#fff',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                }}
+              >
+                本次允许
+              </button>
+              <button
+                onClick={() => handleTaskApproval('always')}
+                style={{
+                  padding: '8px 20px',
+                  borderRadius: '6px',
+                  border: 'none',
+                  background: '#4CAF50',
+                  color: '#fff',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                }}
+              >
+                始终允许
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

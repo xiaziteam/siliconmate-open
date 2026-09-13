@@ -578,3 +578,186 @@ export function formatTime(timestamp: number): string {
   const mm = String(d.getMinutes()).padStart(2, '0')
   return `${hh}:${mm}`
 }
+
+// ===== Task/Result 消息协议 (Agent能力) =====
+
+export interface TaskResult {
+  task_id: string
+  status: string        // "success" | "error" | "rejected" | "timeout"
+  data: any
+  screenshots: string[]  // base64 encoded
+  error_message: string | null
+  execution_tier: string // "native" | "nuphus" | "freecode" | "fallback"
+  duration_ms: number
+  created_at: number
+}
+
+export interface CapabilityInfo {
+  name: string
+  tier: string
+  description: string
+  available: boolean
+}
+
+/** 执行本地task（三层路由：原生→Nuphus→降级） */
+export async function taskExecute(capability: string, params: any = {}): Promise<TaskResult> {
+  const inv = invoke()
+  if (!inv) return {
+    task_id: '',
+    status: 'error',
+    data: {},
+    screenshots: [],
+    error_message: 'Tauri not available',
+    execution_tier: 'none',
+    duration_ms: 0,
+    created_at: Date.now(),
+  }
+  try {
+    return await inv('task_execute', { capability, params }) as TaskResult
+  } catch (e: any) {
+    return {
+      task_id: '',
+      status: 'error',
+      data: {},
+      screenshots: [],
+      error_message: String(e),
+      execution_tier: 'none',
+      duration_ms: 0,
+      created_at: Date.now(),
+    }
+  }
+}
+
+/** 发送task给好友 */
+export async function taskSend(
+  friendAgentId: string,
+  friendUserId: string,
+  capability: string,
+  params: any = {}
+): Promise<any> {
+  const inv = invoke()
+  if (!inv) return { error: 'Tauri not available' }
+  try {
+    const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    return await inv('smcp_task_send', {
+      toAgent: friendAgentId,
+      toUser: friendUserId,
+      taskId,
+      capability,
+      params,
+    })
+  } catch (e) {
+    return { error: String(e) }
+  }
+}
+
+/** 列出本机可用能力 */
+export async function listCapabilities(): Promise<CapabilityInfo[]> {
+  const inv = invoke()
+  if (!inv) return []
+  try {
+    return await inv('task_list_capabilities') as CapabilityInfo[]
+  } catch (e) {
+    console.warn('[SMCP] listCapabilities failed:', e)
+    return []
+  }
+}
+
+/** 检查权限策略 */
+export async function permissionCheck(friendId: string, capability: string): Promise<string> {
+  const inv = invoke()
+  if (!inv) return 'ask'
+  try {
+    const result = await inv('permission_check', { friendId, capability })
+    return result?.policy || 'ask'
+  } catch (e) {
+    return 'ask'
+  }
+}
+
+/** 设置权限策略 */
+export async function permissionSet(friendId: string, capability: string, policy: string): Promise<boolean> {
+  const inv = invoke()
+  if (!inv) return false
+  try {
+    const result = await inv('permission_set', { friendId, capability, policy })
+    return result?.success || false
+  } catch (e) {
+    return false
+  }
+}
+
+/** 检查远程task审批超时 */
+export async function taskCheckTimeouts(): Promise<string[]> {
+  const inv = invoke()
+  if (!inv) return []
+  try {
+    return await inv('task_check_timeouts') as string[]
+  } catch (e) {
+    console.warn('[SMCP] taskCheckTimeouts failed:', e)
+    return []
+  }
+}
+
+/** 移除已审批的挂起远程task */
+export async function taskRemovePendingRemote(taskId: string): Promise<boolean> {
+  const inv = invoke()
+  if (!inv) return false
+  try {
+    const result = await inv('task_remove_pending_remote', { taskId })
+    return result?.success || false
+  } catch (e) {
+    return false
+  }
+}
+
+/** 发送远程任务结果 */
+export async function taskResultSend(
+  toAgent: string,
+  toUser: string,
+  taskId: string,
+  status: string,
+  data: any,
+  screenshots: string[],
+  executionTier: string,
+  durationMs: number,
+  errorMessage: string,
+): Promise<any> {
+  const inv = invoke()
+  if (!inv) return { error: 'Tauri not available' }
+  try {
+    return await inv('smcp_task_result_send', {
+      toAgent,
+      toUser,
+      taskId,
+      status,
+      data,
+      screenshots,
+      executionTier,
+      durationMs,
+      errorMessage,
+    })
+  } catch (e) {
+    return { error: String(e) }
+  }
+}
+
+/** 查询好友能力声明 */
+export async function friendCapabilities(friendAgentId: string): Promise<CapabilityInfo[]> {
+  const inv = invoke()
+  if (!inv) return []
+  try {
+    const result = await inv('smcp_friend_capabilities', { friendAgentId })
+    const data = result?.data || result
+    const caps = data?.capabilities || []
+    return caps.map((c: any) => ({
+      name: c.name || c,
+      tier: c.tier || 'unknown',
+      description: c.description || '',
+      available: true,
+    }))
+  } catch (e) {
+    console.warn('[SMCP] friendCapabilities failed:', e)
+    return []
+  }
+}

@@ -14,7 +14,6 @@ import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
 import android.view.View
-import android.view.WindowManager
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -128,11 +127,9 @@ class MainActivity : AppCompatActivity() {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
         }
 
-        // Full screen
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-        )
+        // 窗口自适应：让系统自动避让状态栏/挖孔/手势导航条
+        // （之前的FLAG_LAYOUT_NO_LIMITS导致内容延伸到系统栏下面，显示不全）
+        // targetSdk 34下decor默认fit system windows，无需edge-to-edge手动处理
 
         setContentView(R.layout.activity_main)
 

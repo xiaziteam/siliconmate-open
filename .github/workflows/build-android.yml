@@ -34,8 +34,8 @@ jobs:
         working-directory: client
         run: npm run build
 
-      - name: Replace server host placeholder
-        if: ${{ secrets.SERVER_HOST != '' }}
+      - name: Replace server host with secret
+        if: ${{ secrets.SERVER_HOST }}
         run: |
           find . -type f \( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' -o -name '*.kt' \) \
             ! -path '*/node_modules/*' ! -path '*/target/*' ! -path '*/.git/*' \

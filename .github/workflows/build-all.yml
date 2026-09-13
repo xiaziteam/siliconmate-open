@@ -93,8 +93,8 @@ jobs:
           sudo chown -R $(whoami) /Users/apple
           git init /Users/apple/nuphus
           git -C /Users/apple/nuphus remote add origin https://github.com/mrpulor-gh/nuphus.git
-          git -C /Users/apple/nuphus fetch --depth 1 origin cbf6e2f
-          git -C /Users/apple/nuphus checkout FETCH_HEAD
+          git -C /Users/apple/nuphus fetch --depth 1 origin tag v0.2.3
+          git -C /Users/apple/nuphus checkout v0.2.3
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -152,8 +152,8 @@ jobs:
           sudo chown -R $(whoami) /Users/apple
           git init /Users/apple/nuphus
           git -C /Users/apple/nuphus remote add origin https://github.com/mrpulor-gh/nuphus.git
-          git -C /Users/apple/nuphus fetch --depth 1 origin cbf6e2f
-          git -C /Users/apple/nuphus checkout FETCH_HEAD
+          git -C /Users/apple/nuphus fetch --depth 1 origin tag v0.2.3
+          git -C /Users/apple/nuphus checkout v0.2.3
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

@@ -1,10 +1,9 @@
-name: Build All Platforms (Private - manual only)
+name: Build All Platforms
 
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
-
-# 私有仓库CI已关闭自动触发，日常构建走公有仓 xiaziteam/siliconmate-open（无限额度）
-# 仅紧急时手动触发
 
 permissions:
   contents: write
@@ -160,7 +159,6 @@ jobs:
           releaseName: 'SiliconMate v__VERSION__'
           releaseBody: '硅侣 v__VERSION__ — Linux'
           releaseDraft: true
-          args: ""
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4

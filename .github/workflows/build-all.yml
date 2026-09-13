@@ -1,9 +1,10 @@
-name: Build All Platforms
+name: Build All Platforms (Private - manual only)
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
+
+# 私有仓库CI已关闭自动触发，日常构建走公有仓 xiaziteam/siliconmate-open（无限额度）
+# 仅紧急时手动触发
 
 permissions:
   contents: write

@@ -12,7 +12,7 @@
 
 import React, { useState, useRef, useEffect } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { formatTime, formatFileSize, getGroupInfo } from './smcp'
+import { formatTime, formatFileSize, getGroupInfo, kickGroupMember, transferGroupOwner, setGroupMemberRole, updateGroup } from './smcp'
 
 interface ImageAttachment {
   path: string
@@ -45,6 +45,8 @@ interface ChatProps {
   smcpTarget?: { userId: string; agentId: string; role: string } | null
   /** 如果是SMCP群聊，传群信息 */
   smcpGroupTarget?: { groupId: string; groupName: string; memberCount?: number; members?: { userId: string; role: string; accountName?: string; siliconId?: string }[] } | null
+  /** 当前用户ID，用于判断群管理权限 */
+  myUserId?: string
 }
 
 /** 高亮搜索关键词 */
@@ -70,6 +72,7 @@ export const Chat: React.FC<ChatProps> = ({
   isVoiceMode,
   smcpTarget,
   smcpGroupTarget,
+  myUserId,
 }) => {
   const isSmcp = !!(smcpTarget || smcpGroupTarget)
   const [input, setInput] = useState('')
@@ -79,6 +82,9 @@ export const Chat: React.FC<ChatProps> = ({
   const [feishuOutput, setFeishuOutput] = useState(false)
   const [showGroupMembers, setShowGroupMembers] = useState(false)
   const [groupMembers, setGroupMembers] = useState<{ userId: string; role: string; accountName?: string; siliconId?: string }[]>([])
+  const [showGroupManage, setShowGroupManage] = useState(false) // 群管理面板
+  const [editingGroupName, setEditingGroupName] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [showMention, setShowMention] = useState(false)
@@ -279,43 +285,120 @@ export const Chat: React.FC<ChatProps> = ({
         </span>
       </header>
 
-      {/* 群成员面板 */}
+      {/* 群成员/管理面板 */}
       {smcpGroupTarget && showGroupMembers && (
         <div style={{
           padding: '8px 20px',
           background: '#141820',
           borderBottom: '1px solid #222',
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '6px',
-          maxHeight: '120px',
+          maxHeight: '200px',
           overflowY: 'auto',
         }}>
+          {/* 群名编辑 */}
+          {editingGroupName ? (
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '8px' }}>
+              <input
+                value={newGroupName}
+                onChange={e => setNewGroupName(e.target.value)}
+                style={{ flex: 1, background: '#1c2030', border: '1px solid #3a3a4a', borderRadius: '4px', color: '#fff', padding: '4px 8px', fontSize: '12px' }}
+                placeholder="新群名"
+              />
+              <button onClick={async () => {
+                if (newGroupName.trim()) {
+                  const r = await updateGroup(smcpGroupTarget.groupId, newGroupName.trim())
+                  if (r.ok) {
+                    smcpGroupTarget.groupName = newGroupName.trim()
+                    setEditingGroupName(false)
+                  } else { alert(r.error || '修改失败') }
+                }
+              }} style={{ padding: '4px 8px', background: '#2a5cff', color: '#fff', border: 'none', borderRadius: '4px', fontSize: '11px' }}>保存</button>
+              <button onClick={() => setEditingGroupName(false)} style={{ padding: '4px 8px', background: '#333', color: '#999', border: 'none', borderRadius: '4px', fontSize: '11px' }}>取消</button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <span style={{ color: '#e6e6e6', fontSize: '12px', fontWeight: 600 }}>👥 {smcpGroupTarget.groupName}</span>
+              {(() => {
+                const myRole = groupMembers.find(m => m.userId === myUserId)?.role
+                return myRole === 'owner' || myRole === 'admin' ? (
+                  <button onClick={() => { setNewGroupName(smcpGroupTarget.groupName); setEditingGroupName(true) }} style={{ padding: '2px 6px', background: '#1c2030', border: '1px solid #3a3a4a', borderRadius: '4px', color: '#8ab4ff', fontSize: '10px' }}>✏️ 改名</button>
+                ) : null
+              })()}
+            </div>
+          )}
+          {/* 成员列表 */}
           {groupMembers.length === 0 && (
             <span style={{ fontSize: '11px', color: '#555' }}>加载中…</span>
           )}
-          {groupMembers.map(m => (
-            <div key={m.userId} style={{
-              background: '#1c2030',
-              border: '1px solid #2a2a3a',
-              borderRadius: '8px',
-              padding: '4px 8px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px',
-              fontSize: '11px',
-            }}>
-              <span style={{ color: m.role === 'owner' ? '#f39c12' : '#2a5cff', fontWeight: 600 }}>
-                {m.role === 'owner' ? '👑' : '👤'}
-              </span>
-              <span style={{ color: '#e6e6e6' }}>{m.accountName || m.userId.slice(0, 8)}</span>
-              {m.siliconId && (
-                <span style={{ color: '#555', fontSize: '9px' }}>({m.siliconId})</span>
-              )}
-            </div>
-           ))}
-         </div>
-       )}
+          {groupMembers.map(m => {
+            const myRole = groupMembers.find(me => me.userId === myUserId)?.role
+            const canManage = myRole === 'owner' || (myRole === 'admin' && m.role === 'member')
+            const canKick = myRole === 'owner' || (myRole === 'admin' && m.role === 'member')
+            const canSetAdmin = myRole === 'owner' && m.userId !== myUserId
+            const canTransfer = myRole === 'owner' && m.userId !== myUserId
+            
+            return (
+              <div key={m.userId} style={{
+                background: '#1c2030',
+                border: '1px solid #2a2a3a',
+                borderRadius: '8px',
+                padding: '4px 8px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '11px',
+                marginBottom: '4px',
+              }}>
+                <span style={{ color: m.role === 'owner' ? '#f39c12' : m.role === 'admin' ? '#e74c3c' : '#2a5cff', fontWeight: 600 }}>
+                  {m.role === 'owner' ? '👑' : m.role === 'admin' ? '🛡️' : '👤'}
+                </span>
+                <span style={{ color: '#e6e6e6' }}>{m.accountName || m.userId.slice(0, 8)}</span>
+                {m.siliconId && (
+                  <span style={{ color: '#555', fontSize: '9px' }}>({m.siliconId})</span>
+                )}
+                {m.role !== 'owner' && m.role !== 'member' && m.role === 'admin' && (
+                  <span style={{ color: '#e74c3c', fontSize: '9px', fontWeight: 600 }}>管理员</span>
+                )}
+                {/* 操作按钮 */}
+                {canKick && m.userId !== myUserId && (
+                  <button onClick={async () => {
+                    if (confirm(`确定踢出 ${m.accountName || m.userId.slice(0, 8)}？`)) {
+                      const r = await kickGroupMember(smcpGroupTarget.groupId, m.userId)
+                      if (r.ok) { setGroupMembers(prev => prev.filter(x => x.userId !== m.userId)) }
+                      else { alert(r.error || '踢出失败') }
+                    }
+                  }} style={{ marginLeft: 'auto', padding: '1px 5px', background: '#5c1a1a', border: '1px solid #e74c3c', borderRadius: '3px', color: '#e74c3c', fontSize: '9px' }}>踢出</button>
+                )}
+                {canSetAdmin && m.role === 'member' && (
+                  <button onClick={async () => {
+                    const r = await setGroupMemberRole(smcpGroupTarget.groupId, m.userId, 'admin')
+                    if (r.ok) { setGroupMembers(prev => prev.map(x => x.userId === m.userId ? { ...x, role: 'admin' } : x)) }
+                    else { alert(r.error || '设置失败') }
+                  }} style={{ marginLeft: '4px', padding: '1px 5px', background: '#1a3c5c', border: '1px solid #3498db', borderRadius: '3px', color: '#3498db', fontSize: '9px' }}>设管理</button>
+                )}
+                {canSetAdmin && m.role === 'admin' && (
+                  <button onClick={async () => {
+                    const r = await setGroupMemberRole(smcpGroupTarget.groupId, m.userId, 'member')
+                    if (r.ok) { setGroupMembers(prev => prev.map(x => x.userId === m.userId ? { ...x, role: 'member' } : x)) }
+                    else { alert(r.error || '取消失败') }
+                  }} style={{ marginLeft: '4px', padding: '1px 5px', background: '#3c3c1a', border: '1px solid #f39c12', borderRadius: '3px', color: '#f39c12', fontSize: '9px' }}>撤管理</button>
+                )}
+                {canTransfer && (
+                  <button onClick={async () => {
+                    if (confirm(`确定将群主转让给 ${m.accountName || m.userId.slice(0, 8)}？你将变为管理员`)) {
+                      const r = await transferGroupOwner(smcpGroupTarget.groupId, m.userId)
+                      if (r.ok) {
+                        // 刷新成员列表
+                        const info = await getGroupInfo(smcpGroupTarget.groupId)
+                        if (info.members) setGroupMembers(info.members.map((mm: any) => ({ userId: mm.user_id, role: mm.role, accountName: mm.account_name, siliconId: mm.silicon_id })))
+                      } else { alert(r.error || '转让失败') }
+                    }
+                  }} style={{ marginLeft: '4px', padding: '1px 5px', background: '#1a5c3c', border: '1px solid #2ecc71', borderRadius: '3px', color: '#2ecc71', fontSize: '9px' }}>转让</button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {/* 消息搜索面板 */}
       {showSearch && (

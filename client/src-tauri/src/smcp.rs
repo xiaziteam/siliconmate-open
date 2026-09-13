@@ -350,6 +350,57 @@ pub async fn smcp_group_message_send(
     })).await
 }
 
+// ===== 群管理 =====
+
+#[tauri::command]
+pub async fn smcp_group_kick(
+    state: State<'_, SmcpState>,
+    group_id: String,
+    user_id: String,
+) -> Result<Value, String> {
+    let cfg = state.config.read().await;
+    let uid = cfg.as_ref().map(|c| c.user_id.as_str()).unwrap_or("");
+    smcp_post(&state, "/group/kick", uid, serde_json::json!({ "group_id": group_id, "user_id": user_id })).await
+}
+
+#[tauri::command]
+pub async fn smcp_group_transfer(
+    state: State<'_, SmcpState>,
+    group_id: String,
+    user_id: String,
+) -> Result<Value, String> {
+    let cfg = state.config.read().await;
+    let uid = cfg.as_ref().map(|c| c.user_id.as_str()).unwrap_or("");
+    smcp_post(&state, "/group/transfer", uid, serde_json::json!({ "group_id": group_id, "user_id": user_id })).await
+}
+
+#[tauri::command]
+pub async fn smcp_group_set_role(
+    state: State<'_, SmcpState>,
+    group_id: String,
+    user_id: String,
+    role: String,
+) -> Result<Value, String> {
+    let cfg = state.config.read().await;
+    let uid = cfg.as_ref().map(|c| c.user_id.as_str()).unwrap_or("");
+    smcp_post(&state, "/group/setRole", uid, serde_json::json!({ "group_id": group_id, "user_id": user_id, "role": role })).await
+}
+
+#[tauri::command]
+pub async fn smcp_group_update(
+    state: State<'_, SmcpState>,
+    group_id: String,
+    name: Option<String>,
+) -> Result<Value, String> {
+    let cfg = state.config.read().await;
+    let uid = cfg.as_ref().map(|c| c.user_id.as_str()).unwrap_or("");
+    let mut body = serde_json::json!({ "group_id": group_id });
+    if let Some(n) = name {
+        body["name"] = serde_json::Value::String(n);
+    }
+    smcp_post(&state, "/group/update", uid, body).await
+}
+
 // ===== 文件传输 =====
 
 #[tauri::command]

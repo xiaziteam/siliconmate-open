@@ -1,0 +1,92 @@
+name: Build macOS (Private - manual only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_x86:
+        description: 'Build x86_64 (macos-13, slow to queue)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: write
+
+jobs:
+  # ARM64 build — always runs
+  build-arm64:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Install frontend deps
+        working-directory: client
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: client
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client
+          tauriScript: npx tauri
+          tagName: v__VERSION__
+          releaseName: 'SiliconMate v__VERSION__'
+          releaseBody: '硅侣 v__VERSION__ — macOS ARM64 + Android'
+          args: --target aarch64-apple-darwin
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SiliconMate-macOS-arm64
+          path: client/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+
+  # x86_64 build — only when manually requested (macos-13 queues are long)
+  build-x86:
+    if: github.event.inputs.build_x86 == 'true'
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Install frontend deps
+        working-directory: client
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: client
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client
+          tauriScript: npx tauri
+          tagName: v__VERSION__
+          releaseName: 'SiliconMate v__VERSION__'
+          releaseBody: '硅侣 v__VERSION__ — macOS x86_64'
+          args: --target x86_64-apple-darwin
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SiliconMate-macOS-x64
+          path: client/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg

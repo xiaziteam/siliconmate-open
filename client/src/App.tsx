@@ -710,6 +710,7 @@ export const App: React.FC = () => {
           isVoiceMode={isVoiceMode}
           smcpTarget={activeConversation?.smcpTarget}
           smcpGroupTarget={activeConversation?.smcpGroupTarget}
+          myUserId={sessionId}
         />
       </div>
     </div>

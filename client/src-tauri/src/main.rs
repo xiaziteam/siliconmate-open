@@ -140,6 +140,10 @@ fn main() {
             smcp::smcp_group_invite,
             smcp::smcp_group_leave,
             smcp::smcp_group_message_send,
+            smcp::smcp_group_kick,
+            smcp::smcp_group_transfer,
+            smcp::smcp_group_set_role,
+            smcp::smcp_group_update,
             smcp::smcp_file_upload,
             smcp::read_file_base64,
         ])

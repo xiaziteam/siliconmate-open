@@ -404,6 +404,55 @@ export async function leaveGroup(groupId: string): Promise<{ ok: boolean; error?
   }
 }
 
+/** 踢出群成员 */
+export async function kickGroupMember(groupId: string, userId: string): Promise<{ ok: boolean; error?: string }> {
+  const inv = invoke()
+  if (!inv) return { ok: false, error: 'Tauri not available' }
+  try {
+    const result = await inv('smcp_group_kick', { groupId, userId })
+    const data = result?.data || result
+    return { ok: result?.ok !== false }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+/** 转让群主 */
+export async function transferGroupOwner(groupId: string, userId: string): Promise<{ ok: boolean; error?: string }> {
+  const inv = invoke()
+  if (!inv) return { ok: false, error: 'Tauri not available' }
+  try {
+    const result = await inv('smcp_group_transfer', { groupId, userId })
+    return { ok: result?.ok !== false }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+/** 设置成员角色 (admin/member) */
+export async function setGroupMemberRole(groupId: string, userId: string, role: string): Promise<{ ok: boolean; error?: string }> {
+  const inv = invoke()
+  if (!inv) return { ok: false, error: 'Tauri not available' }
+  try {
+    const result = await inv('smcp_group_set_role', { groupId, userId, role })
+    return { ok: result?.ok !== false }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+/** 修改群信息 */
+export async function updateGroup(groupId: string, name?: string): Promise<{ ok: boolean; error?: string }> {
+  const inv = invoke()
+  if (!inv) return { ok: false, error: 'Tauri not available' }
+  try {
+    const result = await inv('smcp_group_update', { groupId, name })
+    return { ok: result?.ok !== false }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
 /** 向群发消息 */
 export async function sendGroupMessage(
   groupId: string,

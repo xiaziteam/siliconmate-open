@@ -33,7 +33,7 @@ interface Message {
 }
 
 interface ChatProps {
-  onSendMessage: (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean) => void
+  onSendMessage: (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean, mentions?: string[]) => void
   onVoiceChat: () => void
   status: 'idle' | 'thinking' | 'deep_thinking' | 'streaming' | 'error'
   deepThinkProgress?: string
@@ -81,6 +81,8 @@ export const Chat: React.FC<ChatProps> = ({
   const [groupMembers, setGroupMembers] = useState<{ userId: string; role: string; accountName?: string; siliconId?: string }[]>([])
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [showMention, setShowMention] = useState(false)
+  const [mentionFilter, setMentionFilter] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const invoke = (window as any).__TAURI__?.core?.invoke
@@ -105,7 +107,9 @@ export const Chat: React.FC<ChatProps> = ({
   const handleSend = () => {
     const text = input.trim()
     if (!text && imageAttachments.length === 0) return
-    onSendMessage(text, imageAttachments.length > 0 ? imageAttachments : undefined, deepThinkMode, feishuOutput)
+    // 提取@提及的成员名
+    const mentions = text.match(/@(\S+)/g)?.map(m => m.slice(1)) || []
+    onSendMessage(text, imageAttachments.length > 0 ? imageAttachments : undefined, deepThinkMode, feishuOutput, mentions.length > 0 ? mentions : undefined)
     setInput('')
     setImageAttachments([])
   }
@@ -568,6 +572,73 @@ export const Chat: React.FC<ChatProps> = ({
       )}
 
       {/* Input bar */}
+      {/* @提及弹出面板 */}
+      {showMention && smcpGroupTarget && (
+        <div style={{
+          position: 'absolute',
+          bottom: '70px',
+          left: '20px',
+          background: '#1c2030',
+          border: '1px solid #333',
+          borderRadius: '10px',
+          padding: '6px 0',
+          maxHeight: '200px',
+          overflowY: 'auto',
+          zIndex: 100,
+          minWidth: '180px',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+        }}>
+          <div style={{ padding: '4px 12px', fontSize: '11px', color: '#666' }}>选择要@的成员</div>
+          {groupMembers
+            .filter(m => {
+              const name = m.accountName || m.siliconId || m.userId
+              return !mentionFilter || name.toLowerCase().includes(mentionFilter.toLowerCase())
+            })
+            .map(m => {
+              const name = m.accountName || m.siliconId || m.userId
+              return (
+                <div
+                  key={m.userId}
+                  onClick={() => {
+                    // 替换@后面的文字为选中的名字
+                    const lastAtIndex = input.lastIndexOf('@')
+                    if (lastAtIndex >= 0) {
+                      setInput(input.slice(0, lastAtIndex) + `@${name} `)
+                    } else {
+                      setInput(input + `@${name} `)
+                    }
+                    setShowMention(false)
+                    setMentionFilter('')
+                    inputRef.current?.focus()
+                  }}
+                  style={{
+                    padding: '6px 12px',
+                    cursor: 'pointer',
+                    color: '#e6e6e6',
+                    fontSize: '13px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                  onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.background = '#252840'}
+                  onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.background = 'transparent'}
+                >
+                  <span style={{ fontSize: '10px', color: '#666' }}>{m.role === 'owner' ? '👑' : '👤'}</span>
+                  <span>{name}</span>
+                  {m.siliconId && <span style={{ fontSize: '10px', color: '#555' }}>{m.siliconId}</span>}
+                </div>
+              )
+            })
+          }
+          {groupMembers.filter(m => {
+            const name = m.accountName || m.siliconId || m.userId
+            return !mentionFilter || name.toLowerCase().includes(mentionFilter.toLowerCase())
+          }).length === 0 && (
+            <div style={{ padding: '6px 12px', color: '#666', fontSize: '12px' }}>无匹配成员</div>
+          )}
+        </div>
+      )}
+
       <div style={{
         display: 'flex',
         padding: '14px 20px',
@@ -731,8 +802,33 @@ export const Chat: React.FC<ChatProps> = ({
         <input
           ref={inputRef}
           value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
+          onChange={e => {
+            const val = e.target.value
+            setInput(val)
+            // @提及触发：群聊中输入@时弹出成员列表
+            if (smcpGroupTarget) {
+              const lastAtIndex = val.lastIndexOf('@')
+              if (lastAtIndex >= 0 && (lastAtIndex === 0 || val[lastAtIndex - 1] === ' ')) {
+                const filter = val.slice(lastAtIndex + 1)
+                if (!filter.includes(' ')) {
+                  setMentionFilter(filter)
+                  setShowMention(true)
+                  return
+                }
+              }
+              setShowMention(false)
+            }
+          }}
+          onKeyDown={e => {
+            if (showMention && e.key === 'Escape') {
+              setShowMention(false)
+              return
+            }
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              handleSend()
+            }
+          }}
           placeholder={smcpGroupTarget ? `给 ${smcpGroupTarget.groupName} 发消息…` : smcpTarget ? `给 ${smcpTarget.role} 发消息…` : '说点什么…'}
           autoFocus
           style={{

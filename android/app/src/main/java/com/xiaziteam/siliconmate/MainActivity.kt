@@ -207,6 +207,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleIntent(intent: Intent?) {
+        // 通知点击跳转 — smcp_from_user参数
+        intent?.getStringExtra("smcp_from_user")?.let { fromUser ->
+            if (fromUser.isNotEmpty()) {
+                webView?.evaluateJavascript(
+                    "if(window.__siliconmate_native) window.__siliconmate_native.onNotificationChatOpen('$fromUser')", null
+                )
+                intent.removeExtra("smcp_from_user")
+            }
+        }
+        // 深链接处理
         val action = intent?.action ?: return
         val data = intent.data ?: return
         if (action == Intent.ACTION_VIEW && data.scheme == "siliconmate" && data.host == "agent") {
@@ -927,15 +937,6 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         isForeground = true
-        // 处理通知点击带来的intent
-        intent?.getStringExtra("smcp_from_user")?.let { fromUser ->
-            if (fromUser.isNotEmpty()) {
-                webView.evaluateJavascript(
-                    "if(window.__siliconmate_native) window.__siliconmate_native.onNotificationChatOpen('$fromUser')", null
-                )
-            }
-            intent?.removeExtra("smcp_from_user")
-        }
     }
 
     override fun onPause() {

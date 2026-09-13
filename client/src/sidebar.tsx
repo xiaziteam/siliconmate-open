@@ -322,20 +322,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 gap: '8px',
                 alignItems: 'center',
               }}>
-                {/* 头像圆圈 */}
-                <div style={{
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '50%',
-                  background: conv.smcpGroupTarget ? '#1a3a2a' : conv.smcpTarget ? '#1a2a4a' : '#2a2a3a',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '14px',
-                  flexShrink: 0,
-                  border: convOnline === 'online' ? '2px solid #2ecc71' : '2px solid transparent',
-                }}>
-                  {conv.smcpGroupTarget ? '👥' : conv.smcpTarget ? '🦐' : '🤖'}
+                {/* 头像圆圈 + 未读红点 */}
+                <div style={{ position: 'relative', flexShrink: 0 }}>
+                  <div style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '50%',
+                    background: conv.smcpGroupTarget ? '#1a3a2a' : conv.smcpTarget ? '#1a2a4a' : '#2a2a3a',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '14px',
+                    border: convOnline === 'online' ? '2px solid #2ecc71' : '2px solid transparent',
+                  }}>
+                    {conv.smcpGroupTarget ? '👥' : conv.smcpTarget ? '🦐' : '🤖'}
+                  </div>
+                  {conv.unreadCount && conv.unreadCount > 0 && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '-4px',
+                      right: '-4px',
+                      minWidth: '16px',
+                      height: '16px',
+                      borderRadius: '8px',
+                      background: '#e74c3c',
+                      color: '#fff',
+                      fontSize: '10px',
+                      fontWeight: 700,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '0 4px',
+                      lineHeight: 1,
+                    }}>
+                      {conv.unreadCount > 99 ? '99+' : conv.unreadCount}
+                    </div>
+                  )}
                 </div>
                 <div style={{ flex: 1, overflow: 'hidden' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

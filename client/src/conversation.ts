@@ -59,6 +59,8 @@ export interface Conversation {
   displaySubtitle?: string
   /** 好友在线状态 */
   onlineStatus?: 'online' | 'offline' | null
+  /** 未读消息数 */
+  unreadCount?: number
 }
 
 const STORAGE_KEY = 'siliconmate_conversations'

@@ -285,18 +285,26 @@ export const App: React.FC = () => {
 
     // 用函数式更新避免闭包过期 — 始终拿到最新conversations
     setConversations(prev => {
+      const currentConvId = activeConvId  // 闭包捕获当前活跃对话ID
       // 群聊消息：找对应群对话
       if (groupId) {
         const groupConv = prev.find(c =>
           c.smcpGroupTarget && c.smcpGroupTarget.groupId === groupId
         )
         if (groupConv) {
-          return prev.map(c => c.id === groupConv.id ? addMessage(c, botMsg) : c)
+          const isNotActive = groupConv.id !== currentConvId
+          return prev.map(c => {
+            if (c.id !== groupConv.id) return c
+            const updated = addMessage(c, botMsg)
+            if (isNotActive) updated.unreadCount = (updated.unreadCount || 0) + 1
+            return updated
+          })
         } else {
           // 新群对话
           const groupTarget: SmcpGroupTarget = { groupId, groupName: groupId }
           const conv = createConversation(undefined, undefined, groupTarget)
           const updatedConv = addMessage(conv, botMsg)
+          updatedConv.unreadCount = 1
           return [updatedConv, ...prev]
         }
       }
@@ -305,7 +313,13 @@ export const App: React.FC = () => {
         c.smcpTarget && c.smcpTarget.agentId === fromAgentId
       )
       if (targetConv) {
-        return prev.map(c => c.id === targetConv.id ? addMessage(c, botMsg) : c)
+        const isNotActive = targetConv.id !== currentConvId
+        return prev.map(c => {
+          if (c.id !== targetConv.id) return c
+          const updated = addMessage(c, botMsg)
+          if (isNotActive) updated.unreadCount = (updated.unreadCount || 0) + 1
+          return updated
+        })
       } else {
         const smcpTarget: SmcpTarget = {
           userId: '',
@@ -328,6 +342,10 @@ export const App: React.FC = () => {
 
   const handleSelectConversation = useCallback((id: string) => {
     setActiveConvId(id)
+    // 切换对话时清零未读数
+    setConversations(prev => prev.map(c =>
+      c.id === id ? { ...c, unreadCount: 0 } : c
+    ))
   }, [])
 
   const handleDeleteConversation = useCallback((id: string) => {
@@ -337,7 +355,7 @@ export const App: React.FC = () => {
     }
   }, [activeConvId])
 
-  const handleSendMessage = useCallback(async (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean) => {
+  const handleSendMessage = useCallback(async (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean, mentions?: string[]) => {
     if (!text.trim() && (!attachments || attachments.length === 0)) return
 
     let convId = activeConvId
@@ -397,7 +415,7 @@ export const App: React.FC = () => {
             }
           }
         }
-        const result = await sendGroupMessage(smcpGroupTarget.groupId, { content: text, ...fileParams })
+        const result = await sendGroupMessage(smcpGroupTarget.groupId, { content: text, ...fileParams, ...(mentions && mentions.length > 0 ? { mentions } : {}) })
         if (result?.error) {
           const errMsg: Message = {
             id: `err_${Date.now()}`,

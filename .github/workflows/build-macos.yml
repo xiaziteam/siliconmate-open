@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  SERVER_HOST: ${{ secrets.SERVER_HOST }}
+
 jobs:
   build:
     strategy:
@@ -24,11 +27,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Replace server host with secret
-        if: ${{ secrets.SERVER_HOST }}
+        if: env.SERVER_HOST != ''
         run: |
           find . -type f \( -name '*.rs' -o -name '*.ts' -o -name '*.tsx' -o -name '*.kt' \) \
             ! -path '*/node_modules/*' ! -path '*/target/*' ! -path '*/.git/*' \
-            -exec sed -i '' 's/example\.com/${{ secrets.SERVER_HOST }}/g' {} +
+            -exec sed -i '' 's/example\.com/${SERVER_HOST}/g' {} +
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

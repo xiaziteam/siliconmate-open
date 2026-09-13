@@ -259,7 +259,7 @@ export const App: React.FC = () => {
     // 构建显示内容
     let displayText = ''
     if (fileId) {
-      const fileUrl = `https://<YOUR_SERVER_HOST>/v1/smcp/file/download/${fileId}`
+      const fileUrl = `https://example.com/v1/smcp/file/download/${fileId}`
       displayText = groupId
         ? `👥 📎 [${fileName}](${fileUrl})` + (text ? `\n👥 ${text}` : '')
         : `🦐 📎 [${fileName}](${fileUrl})` + (text ? `\n🦐 ${text}` : '')

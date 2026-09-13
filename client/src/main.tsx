@@ -77,7 +77,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           // SMCP
           case 'smcp_register': {
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/agent/register', {
+              const resp = await fetch('https://example.com/v1/smcp/agent/register', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ user_id: args.userId, agent_id: args.agentId, role: args.role, device: args.device, capabilities: args.capabilities || ['im', 'tunnel', 'notify'] }),
@@ -90,7 +90,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_agent_list': {
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/agent/list', {
+              const resp = await fetch('https://example.com/v1/smcp/agent/list', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ user_id: accountStore.accountId }),
@@ -107,7 +107,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_message_poll': {
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/message/poll', {
+              const resp = await fetch('https://example.com/v1/smcp/message/poll', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ agent_id: args.agentId, limit: args.limit || 50 }),
@@ -153,7 +153,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_ping': {
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/ping', {
+              const resp = await fetch('https://example.com/v1/smcp/ping', {
                 method: 'GET',
                 headers: { 'X-Account-Id': accountStore.accountId },
               })
@@ -169,7 +169,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_message_unread': {
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/message/unread', {
+              const resp = await fetch('https://example.com/v1/smcp/message/unread', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({}),
@@ -182,7 +182,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_message_read': {
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/message/read', {
+              const resp = await fetch('https://example.com/v1/smcp/message/read', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ msg_ids: args.msgIds || [] }),
@@ -203,7 +203,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
             }
             // Fallback to fetch for macOS
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/group/create', {
+              const resp = await fetch('https://example.com/v1/smcp/group/create', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ name: args.name, member_ids: args.memberIds || [] }),
@@ -220,7 +220,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
               } catch (e) { return { groups: [] } }
             }
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/group/list', {
+              const resp = await fetch('https://example.com/v1/smcp/group/list', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({}),
@@ -237,7 +237,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
               } catch (e) { return { ok: false, error: String(e) } }
             }
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/group/info', {
+              const resp = await fetch('https://example.com/v1/smcp/group/info', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ group_id: args.groupId }),
@@ -248,7 +248,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_group_invite': {
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/group/invite', {
+              const resp = await fetch('https://example.com/v1/smcp/group/invite', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ group_id: args.groupId, user_id: args.userId }),
@@ -265,7 +265,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
               } catch (e) { return { ok: false, error: String(e) } }
             }
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/group/leave', {
+              const resp = await fetch('https://example.com/v1/smcp/group/leave', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ group_id: args.groupId }),
@@ -282,7 +282,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
               } catch (e) { return { ok: false, error: String(e) } }
             }
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/group/message/send', {
+              const resp = await fetch('https://example.com/v1/smcp/group/message/send', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({
@@ -305,7 +305,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
               } catch (e) { return { ok: false, error: String(e) } }
             }
             try {
-              const resp = await fetch('https://<YOUR_SERVER_HOST>/v1/smcp/file/upload', {
+              const resp = await fetch('https://example.com/v1/smcp/file/upload', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({

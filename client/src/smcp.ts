@@ -458,7 +458,7 @@ export async function uploadFile(
 
 /** 获取文件下载URL */
 export function getFileDownloadUrl(fileId: string): string {
-  return `https://<YOUR_SERVER_HOST>/v1/smcp/file/download/${fileId}`
+  return `https://example.com/v1/smcp/file/download/${fileId}`
 }
 
 // ===== OCR + 文件选择 =====

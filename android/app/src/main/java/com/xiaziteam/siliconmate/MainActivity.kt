@@ -162,7 +162,7 @@ class MainActivity : AppCompatActivity() {
                 // Allow only our own URLs and necessary external URLs
                 val url = request?.url?.toString() ?: return false
                 if (url.startsWith("file:///android_asset/") ||
-                    url.startsWith("https://<YOUR_SERVER_HOST>") ||
+                    url.startsWith("https://example.com") ||
                     url.startsWith("http://localhost")
                 ) {
                     return false
@@ -391,7 +391,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/message/send")
+                    .url("https://example.com/v1/smcp/message/send")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -412,7 +412,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/request")
+                    .url("https://example.com/v1/smcp/friend/request")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -428,7 +428,7 @@ class MainActivity : AppCompatActivity() {
             return try {
                 val body = "{}".toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/list")
+                    .url("https://example.com/v1/smcp/friend/list")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -448,7 +448,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/accept")
+                    .url("https://example.com/v1/smcp/friend/accept")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -468,7 +468,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/setPermissions")
+                    .url("https://example.com/v1/smcp/friend/setPermissions")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -485,7 +485,7 @@ class MainActivity : AppCompatActivity() {
                 val json = org.json.JSONObject().apply { put("user_id", friendUserId) }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/remove")
+                    .url("https://example.com/v1/smcp/friend/remove")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -504,7 +504,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/lookup")
+                    .url("https://example.com/v1/smcp/lookup")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -520,7 +520,7 @@ class MainActivity : AppCompatActivity() {
             return try {
                 val body = "{}".toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/requests")
+                    .url("https://example.com/v1/smcp/friend/requests")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -542,7 +542,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/request")
+                    .url("https://example.com/v1/smcp/friend/request")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -565,7 +565,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/group/create")
+                    .url("https://example.com/v1/smcp/group/create")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -581,7 +581,7 @@ class MainActivity : AppCompatActivity() {
             return try {
                 val body = "{}".toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/group/list")
+                    .url("https://example.com/v1/smcp/group/list")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -600,7 +600,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/group/info")
+                    .url("https://example.com/v1/smcp/group/info")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -619,7 +619,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/group/leave")
+                    .url("https://example.com/v1/smcp/group/leave")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -642,7 +642,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/group/message/send")
+                    .url("https://example.com/v1/smcp/group/message/send")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -665,7 +665,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/file/upload")
+                    .url("https://example.com/v1/smcp/file/upload")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(body)
                     .build()
@@ -691,7 +691,7 @@ class MainActivity : AppCompatActivity() {
                     .addFormDataPart("sender_id", SmcpAgentService.userId)
                     .build()
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/file/upload")
+                    .url("https://example.com/v1/smcp/file/upload")
                     .header("X-Account-Id", SmcpAgentService.userId)
                     .post(multipart)
                     .build()
@@ -806,7 +806,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/auth/login")
+                    .url("https://example.com/v1/auth/login")
                     .post(body)
                     .build()
                 val response = httpClient.newCall(request).execute()
@@ -854,7 +854,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 val body = json.toString().toRequestBody("application/json".toMediaType())
                 val request = Request.Builder()
-                    .url("https://<YOUR_SERVER_HOST>/v1/auth/register")
+                    .url("https://example.com/v1/auth/register")
                     .post(body)
                     .build()
                 val response = httpClient.newCall(request).execute()
@@ -870,7 +870,7 @@ class MainActivity : AppCompatActivity() {
             val json = gson.toJson(mapOf("code" to code))
             val body = json.toRequestBody("application/json".toMediaType())
             val request = Request.Builder()
-                .url("https://<YOUR_SERVER_HOST>/v1/code/validate")
+                .url("https://example.com/v1/code/validate")
                 .post(body)
                 .build()
             val response = httpClient.newCall(request).execute()

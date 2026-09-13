@@ -35,7 +35,7 @@ class SmcpAgentService : Service() {
         private const val TAG = "SmcpAgent"
         private const val NOTIF_CHANNEL_ID = "smcp_agent"
         private const val NOTIF_ID = 3
-        private const val RELAY_BASE = "https://<YOUR_SERVER_HOST>/v1/smcp"
+        private const val RELAY_BASE = "https://example.com/v1/smcp"
         private const val POLL_INTERVAL_SEC = 3L
 
         var isRunning = false

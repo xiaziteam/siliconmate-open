@@ -37,3 +37,13 @@ Thumbs.db
 
 # Logs
 *.log
+.loopx/
+.codex/
+*.apk
+android/.gradle/
+android/app/build/
+android/build/
+*.apk
+.loopx/
+.codex/
+local.properties

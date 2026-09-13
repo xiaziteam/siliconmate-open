@@ -20,6 +20,7 @@ pub mod obscura;
 pub mod tunnel;
 pub mod voice_input;
 pub mod feishu_output;
+pub mod smcp;
 
 use account::{AppCtx, SessionState};
 
@@ -31,10 +32,21 @@ fn main() {
     }
 
     let base_url = std::env::var("ACCOUNT_SERVICE_URL")
-        .unwrap_or_else(|_| "https://64.83.45.235:8444".into());
+        .unwrap_or_else(|_| "https://<YOUR_SERVER_HOST>".into());
     let self_signed = std::env::var("ACCEPT_SELF_SIGNED")
         .map(|v| v == "1")
         .unwrap_or(true);
+
+    // Startup probe — lightweight debug log (non-blocking, no network probe)
+    {
+        use std::io::Write;
+        if let Ok(mut log) = std::fs::OpenOptions::new()
+            .create(true).append(true)
+            .open("/tmp/siliconmate-debug.log")
+        {
+            let _ = writeln!(log, "[startup] v3.3.0 base_url={}, self_signed={}", base_url, self_signed);
+        }
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -47,9 +59,10 @@ fn main() {
         .manage(agent_manager::AgentManager::default())
         .manage(obscura::ObscuraManager::new())
         .manage(tunnel::TunnelManager::new())
+        .manage(smcp::SmcpState::new())
         .manage(server_connector::ServerConnector::new(
             std::env::var("SILICONMATE_SERVER_HOST")
-                .unwrap_or_else(|_| "64.83.45.235".into()),
+                .unwrap_or_else(|_| "<YOUR_SERVER_HOST>".into()),
             std::env::var("SILICONMATE_SSH_KEY")
                 .unwrap_or_else(|_| {
                     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
@@ -106,6 +119,29 @@ fn main() {
             tunnel::stop_tunnel,
             tunnel::tunnel_status,
             tunnel::get_proxy_url,
+            // SMCP
+            smcp::smcp_register,
+            smcp::smcp_agent_list,
+            smcp::smcp_message_send,
+            smcp::smcp_message_poll,
+            smcp::smcp_friend_request,
+            smcp::smcp_friend_accept,
+            smcp::smcp_friend_list,
+            smcp::smcp_friend_set_permissions,
+            smcp::smcp_friend_remove,
+            smcp::smcp_friend_requests,
+            smcp::smcp_ping,
+            smcp::smcp_lookup,
+            smcp::smcp_message_unread,
+            smcp::smcp_message_read,
+            smcp::smcp_group_create,
+            smcp::smcp_group_list,
+            smcp::smcp_group_info,
+            smcp::smcp_group_invite,
+            smcp::smcp_group_leave,
+            smcp::smcp_group_message_send,
+            smcp::smcp_file_upload,
+            smcp::read_file_base64,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

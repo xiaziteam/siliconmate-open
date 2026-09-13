@@ -14,12 +14,51 @@ export interface Message {
   timestamp: number
 }
 
+export interface SmcpTarget {
+  /** 对方用户ID */
+  userId: string
+  /** 对方Agent ID (如 A-xxxx-role) */
+  agentId: string
+  /** 对方Agent角色/昵称 */
+  role: string
+  /** 我方Agent ID */
+  myAgentId: string
+}
+
+export interface SmcpGroupTarget {
+  /** 群ID */
+  groupId: string
+  /** 群名 */
+  groupName: string
+  /** 成员数量 */
+  memberCount?: number
+  /** 成员列表 */
+  members?: SmcpGroupMemberSimple[]
+}
+
+export interface SmcpGroupMemberSimple {
+  userId: string
+  role: string
+  accountName?: string
+  siliconId?: string
+}
+
 export interface Conversation {
   id: string
   title: string
   messages: Message[]
   createdAt: number
   updatedAt: number
+  /** 如果是SMCP对话，记录对方信息；null=本地AI对话 */
+  smcpTarget?: SmcpTarget | null
+  /** 如果是SMCP群聊，记录群信息 */
+  smcpGroupTarget?: SmcpGroupTarget | null
+  /** 对话列表显示名（好友昵称或群名） */
+  displayName?: string
+  /** 副标题（硅侣号SM-XXXX或"N名成员"） */
+  displaySubtitle?: string
+  /** 好友在线状态 */
+  onlineStatus?: 'online' | 'offline' | null
 }
 
 const STORAGE_KEY = 'siliconmate_conversations'
@@ -54,14 +93,23 @@ export function saveConversations(conversations: Conversation[]): void {
   }
 }
 
-export function createConversation(firstMessage?: string): Conversation {
+export function createConversation(firstMessage?: string, smcpTarget?: SmcpTarget, smcpGroupTarget?: SmcpGroupTarget): Conversation {
   const now = Date.now()
+  const title = firstMessage
+    ? generateTitle(firstMessage)
+    : smcpGroupTarget
+      ? `👥 ${smcpGroupTarget.groupName}`
+      : smcpTarget
+        ? `🦐 ${smcpTarget.role}`
+        : '新对话'
   return {
     id: generateId(),
-    title: firstMessage ? generateTitle(firstMessage) : '新对话',
+    title,
     messages: [],
     createdAt: now,
     updatedAt: now,
+    smcpTarget: smcpTarget || null,
+    smcpGroupTarget: smcpGroupTarget || null,
   }
 }
 
@@ -90,4 +138,47 @@ export function updateLastAssistantMessage(conversation: Conversation, content: 
 
 export function deleteConversation(conversations: Conversation[], id: string): Conversation[] {
   return conversations.filter(c => c.id !== id)
+}
+
+/** 计算对话的显示名和在线状态 */
+export function getConversationDisplay(
+  conv: Conversation,
+  friends?: any[], // SmcpFriend[]
+  groups?: any[]   // SmcpGroup[]
+): {
+  displayName: string
+  displaySubtitle: string
+  onlineStatus: 'online' | 'offline' | null
+} {
+  // 群聊
+  if (conv.smcpGroupTarget) {
+    const group = groups?.find((g: any) => g.group_id === conv.smcpGroupTarget!.groupId)
+    const groupName = group?.name || conv.smcpGroupTarget.groupName || '群聊'
+    const memberCount = group?.member_count || 0
+    return {
+      displayName: groupName,
+      displaySubtitle: memberCount > 0 ? `${memberCount}名成员` : '群聊',
+      onlineStatus: null,
+    }
+  }
+
+  // SMCP单聊
+  if (conv.smcpTarget) {
+    const friend = friends?.find((f: any) => f.friend_user_id === conv.smcpTarget!.userId)
+    const friendName = friend?.account_name || friend?.alias || conv.smcpTarget.role || '好友'
+    const siliconId = friend?.silicon_id || ''
+    const isOnline = friend?.agent_status === 'online'
+    return {
+      displayName: friendName,
+      displaySubtitle: siliconId ? siliconId : conv.smcpTarget.agentId.slice(0, 12),
+      onlineStatus: isOnline ? 'online' : 'offline',
+    }
+  }
+
+  // 本地AI对话
+  return {
+    displayName: conv.title || '新对话',
+    displaySubtitle: '',
+    onlineStatus: null,
+  }
 }

@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 
 interface LoginProps {
-  onLoginSuccess: (sessionId: string, chatgptSession?: { access_token: string; cookies: any; expires: string }, activated?: boolean, plan?: string) => void
+  onLoginSuccess: (sessionId: string, chatgptSession?: { access_token: string; cookies: any; expires: string }, activated?: boolean, plan?: string, siliconId?: string) => void
   onGuestEnter: () => void
 }
 
@@ -51,14 +51,14 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
         try {
           const payload = await invoke('apply_session')
           console.log('[login] session payload OK')
-          onLoginSuccess(payload.session_id, payload.chatgpt_session, true, resp.plan)
+          onLoginSuccess(payload.session_id, payload.chatgpt_session, true, resp.plan, resp.silicon_id)
         } catch (se) {
           console.warn('[login] apply_session failed:', se)
-          onLoginSuccess(resp.account_id, undefined, true, resp.plan)
+          onLoginSuccess(resp.account_id, undefined, true, resp.plan, resp.silicon_id)
         }
       } else {
         console.log('[login] not activated, entering free mode')
-        onLoginSuccess(resp.account_id, undefined, false, undefined)
+        onLoginSuccess(resp.account_id, undefined, false, undefined, resp.silicon_id)
       }
 
       try { await invoke('finish_enter') } catch {}
@@ -100,7 +100,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
       })
       say('注册成功！免费模式进入', 'ok')
 
-      onLoginSuccess(resp.account_id, undefined, false, undefined)
+      onLoginSuccess(resp.account_id, undefined, false, undefined, resp.silicon_id)
       try { await invoke('finish_enter') } catch {}
     } catch (e: any) {
       console.error('[register] FAILED:', e)

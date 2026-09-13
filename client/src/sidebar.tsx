@@ -1,5 +1,29 @@
-import React, { useState } from 'react'
-import { Conversation } from './conversation'
+import React, { useState, useEffect } from 'react'
+import { Conversation, getConversationDisplay } from './conversation'
+import {
+  getFriends,
+  getPendingRequests,
+  sendFriendRequest,
+  acceptFriendRequest,
+  removeFriend,
+  lookupSiliconId,
+  SmcpFriend,
+  SmcpPendingRequest,
+  ping as smcpPing,
+  getGroups,
+  createGroup,
+  sendGroupMessage,
+  inviteToGroup,
+  SmcpGroup,
+  formatTime,
+} from './smcp'
+
+interface SmcpConversationTarget {
+  userId: string
+  agentId: string
+  role: string
+  myAgentId: string
+}
 
 interface SidebarProps {
   conversations: Conversation[]
@@ -12,6 +36,14 @@ interface SidebarProps {
   activated: boolean
   plan: string | null
   onActivate: (plan: string) => void
+  /** SMCP: 点击好友创建/选中SMCP对话 */
+  onOpenSmcpChat: (target: SmcpConversationTarget) => void
+  /** SMCP: 点击群聊打开群对话 */
+  onOpenGroupChat: (groupId: string, groupName: string) => void
+  /** 当前登录用户ID(用于SMCP) */
+  accountId?: string
+  /** 当前用户硅侣号 */
+  mySiliconId?: string
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -25,6 +57,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activated,
   plan,
   onActivate,
+  onOpenSmcpChat,
+  onOpenGroupChat,
+  accountId,
+  mySiliconId,
 }) => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
   const [showActivateModal, setShowActivateModal] = useState(false)
@@ -32,7 +68,32 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [activateMsg, setActivateMsg] = useState('')
   const [activateLoading, setActivateLoading] = useState(false)
 
+  // SMCP state
+  const [showSmcpPanel, setShowSmcpPanel] = useState(false)
+  const [smcpFriends, setSmcpFriends] = useState<SmcpFriend[]>([])
+  const [smcpRequests, setSmcpRequests] = useState<SmcpPendingRequest[]>([])
+  const [smcpRelayOk, setSmcpRelayOk] = useState(false)
+  const [unreadCount, setUnreadCount] = useState(0)
+  const [addFriendId, setAddFriendId] = useState('')
+  const [addFriendMsg, setAddFriendMsg] = useState('')
+  const [smcpGroups, setSmcpGroups] = useState<SmcpGroup[]>([])
+  const [createGroupName, setCreateGroupName] = useState('')
+  const [selectedFriendIds, setSelectedFriendIds] = useState<Set<string>>(new Set())
+  const [showCreateGroup, setShowCreateGroup] = useState(false)
+  const [inviteGroupId, setInviteGroupId] = useState<string | null>(null)
+  const [inviteSelectedIds, setInviteSelectedIds] = useState<Set<string>>(new Set())
+
   const invoke = (window as any).__TAURI__?.core?.invoke
+
+  // Load SMCP data when panel opens
+  useEffect(() => {
+    if (showSmcpPanel && accountId) {
+      smcpPing().then(setSmcpRelayOk)
+      getFriends().then(setSmcpFriends)
+      getGroups().then(setSmcpGroups)
+      getPendingRequests().then(setSmcpRequests)
+    }
+  }, [showSmcpPanel, accountId])
 
   const handleActivateSubmit = async () => {
     if (!activateCode.trim()) { setActivateMsg('请输入激活码'); return }
@@ -93,6 +154,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
           }}
         >
           +
+        </button>
+        <button
+          onClick={() => setShowSmcpPanel(true)}
+          title="虾群好友"
+          style={{
+            background: '#2a2a3a', color: '#e6e6e6', border: 'none',
+            borderRadius: '8px', width: '36px', height: '36px', cursor: 'pointer', fontSize: '16px',
+          }}
+        >
+          🦐
         </button>
         <div title={activated ? '已激活' : '未激活'} style={{
           fontSize: '14px', color: activated ? '#2ecc71' : '#e74c3c', marginTop: '4px',
@@ -176,6 +247,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
         )}
       </div>
 
+      {/* SMCP 虾群好友入口 */}
+      <div
+        onClick={() => setShowSmcpPanel(true)}
+        style={{
+          padding: '8px 14px',
+          borderBottom: '1px solid #222',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          cursor: 'pointer',
+          transition: 'background 0.15s',
+        }}
+        onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.background = '#141820'}
+        onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.background = 'transparent'}
+      >
+        <span style={{ fontSize: '12px', color: '#7a8aa0' }}>
+          🦐 {mySiliconId || '虾群好友'}
+          {smcpRequests.length > 0 && (
+            <span style={{ color: '#f39c12', marginLeft: '6px' }}>({smcpRequests.length}请求)</span>
+          )}
+        </span>
+        <span style={{ fontSize: '12px', color: '#555' }}>›</span>
+      </div>
+
       {/* Conversation list */}
       <div style={{
         flex: 1,
@@ -196,6 +291,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           const preview = lastMsg
             ? (lastMsg.content.length > 30 ? lastMsg.content.slice(0, 30) + '…' : lastMsg.content)
             : '空对话'
+          // Use getConversationDisplay for friendly names
+          const display = getConversationDisplay(conv, smcpFriends, smcpGroups)
+          const convDisplayName = display.displayName || conv.title
+          const convSubtitle = display.displaySubtitle
+          const convOnline = display.onlineStatus
 
           return (
             <div
@@ -219,20 +319,60 @@ export const Sidebar: React.FC<SidebarProps> = ({
             >
               <div style={{
                 display: 'flex',
-                justifyContent: 'space-between',
+                gap: '8px',
                 alignItems: 'center',
               }}>
-                <span style={{
-                  fontSize: '13px',
-                  fontWeight: isActive ? 600 : 400,
-                  color: isActive ? '#e6e6e6' : '#bbb',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  flex: 1,
+                {/* 头像圆圈 */}
+                <div style={{
+                  width: '32px',
+                  height: '32px',
+                  borderRadius: '50%',
+                  background: conv.smcpGroupTarget ? '#1a3a2a' : conv.smcpTarget ? '#1a2a4a' : '#2a2a3a',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '14px',
+                  flexShrink: 0,
+                  border: convOnline === 'online' ? '2px solid #2ecc71' : '2px solid transparent',
                 }}>
-                  {conv.title}
-                </span>
+                  {conv.smcpGroupTarget ? '👥' : conv.smcpTarget ? '🦐' : '🤖'}
+                </div>
+                <div style={{ flex: 1, overflow: 'hidden' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{
+                      fontSize: '13px',
+                      fontWeight: isActive ? 600 : 400,
+                      color: isActive ? '#e6e6e6' : '#bbb',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      flex: 1,
+                    }}>
+                      {convDisplayName}
+                    </span>
+                    <span style={{ fontSize: '10px', color: '#555', flexShrink: 0, marginLeft: '4px' }}>
+                      {lastMsg ? formatTime(lastMsg.timestamp) : ''}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    {convOnline && (
+                      <span style={{ fontSize: '8px' }}>
+                        {convOnline === 'online' ? '🟢' : '⚫'}
+                      </span>
+                    )}
+                    <span style={{
+                      fontSize: '11px',
+                      color: '#666',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      flex: 1,
+                    }}>
+                      {convSubtitle && <span style={{ marginRight: '4px' }}>{convSubtitle}</span>}
+                      {preview}
+                    </span>
+                  </div>
+                </div>
                 {isActive && (
                   <button
                     onClick={e => {
@@ -359,6 +499,417 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 {activateMsg}
               </p>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* SMCP 虾群好友面板 */}
+      {showSmcpPanel && (
+        <div style={{
+          position: 'absolute',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          flexDirection: 'column',
+          zIndex: 100,
+        }}>
+          <div style={{
+            background: '#1a1d25',
+            flex: 1,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '12px 14px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              borderBottom: '1px solid #222',
+            }}>
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#e6e6e6' }}>
+                🦐 虾群好友
+                {mySiliconId && <span style={{ fontSize: '11px', color: '#4a8', marginLeft: '8px' }}>{mySiliconId}</span>}
+              </span>
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                <span style={{ fontSize: '10px', color: smcpRelayOk ? '#2ecc71' : '#e74c3c' }}>
+                  {smcpRelayOk ? '中继✓' : '中继✗'}
+                </span>
+                <button
+                  onClick={() => setShowSmcpPanel(false)}
+                  style={{
+                    background: '#2a2a3a', color: '#aaa', border: 'none',
+                    borderRadius: '6px', width: '28px', height: '28px', cursor: 'pointer', fontSize: '14px',
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Add friend by silicon_id */}
+            <div style={{
+              padding: '10px 14px',
+              borderBottom: '1px solid #222',
+            }}>
+              <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '6px' }}>添加好友(输入硅侣号)</div>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                <input
+                  type="text"
+                  placeholder="SM-XXXX"
+                  value={addFriendId}
+                  onChange={e => setAddFriendId(e.target.value.toUpperCase())}
+                  style={{
+                    flex: 1,
+                    background: '#0f1115',
+                    border: '1px solid #333',
+                    borderRadius: '6px',
+                    padding: '6px 10px',
+                    color: '#e6e6e6',
+                    fontSize: '12px',
+                    outline: 'none',
+                    letterSpacing: '1px',
+                  }}
+                />
+                <button
+                  onClick={async () => {
+                    if (!addFriendId.trim()) return
+                    setAddFriendMsg('查找中...')
+                    try {
+                      const lookup = await lookupSiliconId(addFriendId.trim())
+                      if (lookup?.error) {
+                        setAddFriendMsg('查找失败: ' + String(lookup.error))
+                        setTimeout(() => setAddFriendMsg(''), 5000)
+                        return
+                      }
+                      if (!lookup?.ok && !lookup?.data) {
+                        setAddFriendMsg('硅侣号不存在')
+                        setTimeout(() => setAddFriendMsg(''), 3000)
+                        return
+                      }
+                      const targetName = lookup.data?.account_name || addFriendId.trim()
+                      setAddFriendMsg('发送请求中...')
+                       const result = await sendFriendRequest('', `你好，我是${targetName}的好友`, { agent_comm: true }, addFriendId.trim())
+                       if (result?.ok) {
+                        setAddFriendMsg(`已向 ${targetName}(${addFriendId.trim()}) 发送请求 ✓`)
+                        setAddFriendId('')
+                        setTimeout(() => setAddFriendMsg(''), 3000)
+                      } else if (result?.error === 'EXISTS' || String(result?.message).includes('already friends')) {
+                        setAddFriendMsg(`已是好友 ✓`)
+                        setAddFriendId('')
+                        setTimeout(() => setAddFriendMsg(''), 3000)
+                      } else {
+                        const errMsg = result?.error || result?.message || JSON.stringify(result) || '发送失败'
+                        setAddFriendMsg('失败: ' + String(errMsg))
+                        setTimeout(() => setAddFriendMsg(''), 5000)
+                      }
+                    } catch (e: any) {
+                      setAddFriendMsg('异常: ' + String(e))
+                      setTimeout(() => setAddFriendMsg(''), 5000)
+                    }
+                  }}
+                  style={{
+                    background: '#2a5cff', color: '#fff', border: 'none',
+                    borderRadius: '6px', padding: '6px 10px', cursor: 'pointer', fontSize: '12px',
+                  }}
+                >
+                  加好友
+                </button>
+              </div>
+              {addFriendMsg && (
+                <div style={{ fontSize: '11px', color: addFriendMsg.includes('✓') ? '#2ecc71' : '#e74c3c', marginTop: '4px' }}>
+                  {addFriendMsg}
+                </div>
+              )}
+            </div>
+
+            {/* Pending requests */}
+            {smcpRequests.length > 0 && (
+              <div style={{
+                padding: '8px 14px',
+                borderBottom: '1px solid #222',
+                maxHeight: '120px',
+                overflowY: 'auto',
+              }}>
+                <div style={{ fontSize: '11px', color: '#f39c12', marginBottom: '4px' }}>待处理请求</div>
+                {smcpRequests.map(req => (
+                  <div key={req.request_id} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '4px 0', fontSize: '12px',
+                  }}>
+                    <span style={{ color: '#bbb', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                      {req.from_user_id.slice(0, 12)}…: {req.message}
+                    </span>
+                    <button
+                      onClick={async () => {
+                        await acceptFriendRequest(req.request_id)
+                        setSmcpRequests(prev => prev.filter(r => r.request_id !== req.request_id))
+                        getFriends().then(setSmcpFriends)
+                      }}
+                      style={{
+                        background: '#2ecc71', color: '#fff', border: 'none',
+                        borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', fontSize: '11px',
+                        marginLeft: '4px', flexShrink: 0,
+                      }}
+                    >
+                      接受
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Friends list */}
+            <div style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '6px',
+            }}>
+              <div style={{ fontSize: '11px', color: '#555', padding: '4px 6px', marginBottom: '4px' }}>
+                好友列表 ({smcpFriends.length})
+              </div>
+              {smcpFriends.length === 0 && (
+                <div style={{ color: '#555', fontSize: '12px', textAlign: 'center', padding: '20px 0' }}>
+                  暂无好友，输入用户ID添加
+                </div>
+              )}
+              {smcpFriends.map(friend => {
+                // 从好友信息构造Agent ID (格式: A-{userId8}-{role8})
+                const friendAgentId = `A-${friend.friend_user_id.slice(0, 8)}-siliconm`
+                const friendDisplay = friend.silicon_id || friend.alias || friend.friend_user_id.slice(0, 8)
+                const friendName = friend.account_name || ''
+                const hasComm = friend.granted_perms?.agent_comm || friend.received_perms?.agent_comm
+                const hasDelegate = friend.granted_perms?.agent_delegate || friend.received_perms?.agent_delegate
+                const isOnline = friend.agent_status === 'online'
+                const onlineDot = isOnline ? '🟢' : '⚫'
+                return (
+                  <div
+                    key={friend.friend_id}
+                    onClick={() => {
+                      onOpenSmcpChat({
+                        userId: friend.friend_user_id,
+                        agentId: friendAgentId,
+                        role: friendDisplay,
+                        myAgentId: `A-${(accountId || '').slice(0, 8)}-siliconm`,
+                      })
+                      setShowSmcpPanel(false)
+                    }}
+                    style={{
+                      padding: '8px 10px',
+                      borderRadius: '8px',
+                      marginBottom: '2px',
+                      cursor: 'pointer',
+                      transition: 'background 0.15s',
+                    }}
+                    onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.background = '#141820'}
+                    onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.background = 'transparent'}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '13px', color: '#e6e6e6' }}>{onlineDot} {friendDisplay}</span>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation()
+                          await removeFriend(friend.friend_user_id)
+                          getFriends().then(setSmcpFriends)
+                        }}
+                        style={{
+                          background: 'transparent', color: '#555', border: 'none',
+                          padding: '0 4px', cursor: 'pointer', fontSize: '12px',
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#555', marginTop: '2px' }}>
+                      {hasComm ? '💬' : '🚫'}沟通
+                      {hasDelegate ? ' 🤝委派' : ''}
+                      {friendName && <span style={{ color: '#7a8aa0' }}> · {friendName}</span>}
+                    </div>
+                  </div>
+                )
+              })}
+
+              {/* 群聊区域 */}
+              <div style={{ fontSize: '11px', color: '#555', padding: '8px 6px 4px', borderTop: '1px solid #222', marginTop: '8px' }}>
+                群聊 ({smcpGroups.length})
+              </div>
+              {smcpGroups.map(group => (
+                <div
+                  key={group.group_id}
+                  style={{
+                    padding: '8px 10px',
+                    borderRadius: '8px',
+                    marginBottom: '2px',
+                    cursor: 'pointer',
+                    transition: 'background 0.15s',
+                  }}
+                  onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.background = '#141820'}
+                  onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.background = 'transparent'}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div
+                      onClick={() => {
+                        onOpenGroupChat(group.group_id, group.name)
+                        setShowSmcpPanel(false)
+                      }}
+                      style={{ flex: 1 }}
+                    >
+                      <div style={{ fontSize: '13px', color: '#e6e6e6' }}>👥 {group.name}</div>
+                      <div style={{ fontSize: '10px', color: '#555', marginTop: '2px' }}>
+                        {group.member_count || 0}人
+                      </div>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setInviteGroupId(group.group_id)
+                        setInviteSelectedIds(new Set())
+                      }}
+                      title="邀请好友入群"
+                      style={{
+                        background: 'transparent', color: '#888', border: '1px solid #333',
+                        borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', fontSize: '10px',
+                      }}
+                    >
+                      +邀请
+                    </button>
+                  </div>
+                </div>
+              ))}
+
+              {/* 邀请好友入群弹窗 */}
+              {inviteGroupId && (
+                <div style={{ padding: '8px 6px', background: '#0a0c10', borderRadius: '6px', border: '1px solid #2a5cff', margin: '4px 0' }}>
+                  <div style={{ fontSize: '11px', color: '#2a5cff', marginBottom: '6px' }}>邀请好友入群</div>
+                  {smcpFriends.length === 0 && (
+                    <div style={{ fontSize: '10px', color: '#555' }}>暂无好友可邀请</div>
+                  )}
+                  {smcpFriends.map(f => (
+                    <label key={f.friend_user_id} style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '2px 0', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={inviteSelectedIds.has(f.friend_user_id)}
+                        onChange={() => {
+                          setInviteSelectedIds(prev => {
+                            const next = new Set(prev)
+                            if (next.has(f.friend_user_id)) next.delete(f.friend_user_id)
+                            else next.add(f.friend_user_id)
+                            return next
+                          })
+                        }}
+                        style={{ width: '12px', height: '12px' }}
+                      />
+                      <span style={{ fontSize: '11px', color: '#ccc' }}>{f.account_name || f.alias || f.friend_user_id}</span>
+                      <span style={{ fontSize: '9px', color: '#555' }}>({f.silicon_id || ''})</span>
+                    </label>
+                  ))}
+                  <div style={{ display: 'flex', gap: '4px', marginTop: '6px' }}>
+                    <button
+                      onClick={async () => {
+                        if (inviteSelectedIds.size === 0) return
+                        for (const uid of inviteSelectedIds) {
+                          await inviteToGroup(inviteGroupId, uid)
+                        }
+                        setInviteGroupId(null)
+                        setInviteSelectedIds(new Set())
+                        getGroups().then(setSmcpGroups)
+                      }}
+                      disabled={inviteSelectedIds.size === 0}
+                      style={{
+                        flex: 1, background: inviteSelectedIds.size > 0 ? '#2a5cff' : '#1a1a2a',
+                        color: '#fff', border: 'none', borderRadius: '4px', padding: '4px', cursor: inviteSelectedIds.size > 0 ? 'pointer' : 'not-allowed', fontSize: '11px',
+                      }}
+                    >
+                      邀请{inviteSelectedIds.size > 0 ? ` ${inviteSelectedIds.size} 人` : ''}
+                    </button>
+                    <button
+                      onClick={() => { setInviteGroupId(null); setInviteSelectedIds(new Set()) }}
+                      style={{ background: '#1a1a2a', color: '#888', border: 'none', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer', fontSize: '11px' }}
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 创建群 */}
+              <div style={{ padding: '6px' }}>
+                {!showCreateGroup ? (
+                  <button
+                    onClick={() => { setShowCreateGroup(true); setSelectedFriendIds(new Set()) }}
+                    style={{ width: '100%', background: '#1a1a2a', color: '#888', border: '1px dashed #333', borderRadius: '6px', padding: '6px', cursor: 'pointer', fontSize: '11px' }}
+                  >
+                    + 创建新群
+                  </button>
+                ) : (
+                  <div style={{ background: '#0a0c10', borderRadius: '6px', border: '1px solid #2a5cff', padding: '8px' }}>
+                    <div style={{ fontSize: '11px', color: '#2a5cff', marginBottom: '6px' }}>创建新群</div>
+                    <input
+                      type="text"
+                      placeholder="输入群名"
+                      value={createGroupName}
+                      onChange={e => setCreateGroupName(e.target.value)}
+                      style={{
+                        width: '100%', background: '#0f1115', border: '1px solid #333',
+                        borderRadius: '6px', padding: '4px 8px', color: '#e6e6e6', fontSize: '11px', outline: 'none', boxSizing: 'border-box',
+                      }}
+                    />
+                    <div style={{ fontSize: '10px', color: '#888', margin: '6px 0 4px' }}>选择好友：</div>
+                    {smcpFriends.length === 0 && (
+                      <div style={{ fontSize: '10px', color: '#555' }}>暂无好友，先添加好友再建群</div>
+                    )}
+                    {smcpFriends.map(f => (
+                      <label key={f.friend_user_id} style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '2px 0', cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedFriendIds.has(f.friend_user_id)}
+                          onChange={() => {
+                            setSelectedFriendIds(prev => {
+                              const next = new Set(prev)
+                              if (next.has(f.friend_user_id)) next.delete(f.friend_user_id)
+                              else next.add(f.friend_user_id)
+                              return next
+                            })
+                          }}
+                          style={{ width: '12px', height: '12px' }}
+                        />
+                        <span style={{ fontSize: '11px', color: '#ccc' }}>{f.account_name || f.alias || f.friend_user_id}</span>
+                        <span style={{ fontSize: '9px', color: '#555' }}>({f.silicon_id || ''})</span>
+                      </label>
+                    ))}
+                    <div style={{ display: 'flex', gap: '4px', marginTop: '6px' }}>
+                      <button
+                        onClick={async () => {
+                          if (!createGroupName.trim()) return
+                          const friendIds = Array.from(selectedFriendIds)
+                          const result = await createGroup(createGroupName.trim(), friendIds)
+                          if (result.ok) {
+                            setCreateGroupName('')
+                            setShowCreateGroup(false)
+                            setSelectedFriendIds(new Set())
+                            getGroups().then(setSmcpGroups)
+                          }
+                        }}
+                        disabled={!createGroupName.trim()}
+                        style={{
+                          flex: 1, background: createGroupName.trim() ? '#2a5cff' : '#1a1a2a',
+                          color: '#fff', border: 'none', borderRadius: '4px', padding: '4px', cursor: createGroupName.trim() ? 'pointer' : 'not-allowed', fontSize: '11px',
+                        }}
+                      >
+                        建群{selectedFriendIds.size > 0 ? ` (${selectedFriendIds.size}人)` : ''}
+                      </button>
+                      <button
+                        onClick={() => { setShowCreateGroup(false); setCreateGroupName(''); setSelectedFriendIds(new Set()) }}
+                        style={{ background: '#1a1a2a', color: '#888', border: 'none', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer', fontSize: '11px' }}
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}

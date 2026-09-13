@@ -12,6 +12,7 @@
 
 import React, { useState, useRef, useEffect } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
+import { formatTime, formatFileSize, getGroupInfo } from './smcp'
 
 interface ImageAttachment {
   path: string
@@ -19,6 +20,8 @@ interface ImageAttachment {
   ocr_text: string | null
   ocr_status: 'pending' | 'success' | 'failed' | 'not_available' | 'no_text'
   file_size: number
+  data?: string // base64 for SMCP transfer
+  type?: string // mime type for SMCP transfer
 }
 
 interface Message {
@@ -38,6 +41,22 @@ interface ChatProps {
   serverConnecting?: boolean
   messages: Message[]
   isVoiceMode: boolean
+  /** 如果是SMCP对话，传对方信息 */
+  smcpTarget?: { userId: string; agentId: string; role: string } | null
+  /** 如果是SMCP群聊，传群信息 */
+  smcpGroupTarget?: { groupId: string; groupName: string; memberCount?: number; members?: { userId: string; role: string; accountName?: string; siliconId?: string }[] } | null
+}
+
+/** 高亮搜索关键词 */
+function highlightText(text: string, query: string): React.ReactNode {
+  if (!query || !text.toLowerCase().includes(query.toLowerCase())) return text
+  const idx = text.toLowerCase().indexOf(query.toLowerCase())
+  const before = text.slice(0, idx)
+  const match = text.slice(idx, idx + query.length)
+  const after = text.slice(idx + query.length)
+  return <>
+    {before}<span style={{ background: '#f39c12', color: '#000', borderRadius: '2px', padding: '0 2px' }}>{match}</span>{highlightText(after, query)}
+  </>
 }
 
 export const Chat: React.FC<ChatProps> = ({
@@ -49,12 +68,19 @@ export const Chat: React.FC<ChatProps> = ({
   serverConnecting,
   messages,
   isVoiceMode,
+  smcpTarget,
+  smcpGroupTarget,
 }) => {
+  const isSmcp = !!(smcpTarget || smcpGroupTarget)
   const [input, setInput] = useState('')
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([])
   const [isProcessingImage, setIsProcessingImage] = useState(false)
   const [deepThinkMode, setDeepThinkMode] = useState(false)
   const [feishuOutput, setFeishuOutput] = useState(false)
+  const [showGroupMembers, setShowGroupMembers] = useState(false)
+  const [groupMembers, setGroupMembers] = useState<{ userId: string; role: string; accountName?: string; siliconId?: string }[]>([])
+  const [showSearch, setShowSearch] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const invoke = (window as any).__TAURI__?.core?.invoke
@@ -165,10 +191,63 @@ export const Chat: React.FC<ChatProps> = ({
         alignItems: 'center',
         gap: '12px',
       }}>
-        <h1 style={{ fontSize: '18px', fontWeight: 600, margin: 0 }}>硅侣</h1>
+        <h1 style={{ fontSize: '18px', fontWeight: 600, margin: 0 }}>
+          {smcpGroupTarget ? `👥 ${smcpGroupTarget.groupName}` : smcpTarget ? `🦐 ${smcpTarget.role}` : '硅侣'}
+        </h1>
         <span style={{ fontSize: '12px', color: '#7a8aa0' }}>
-          SiliconMate · 硅基生命数字人伴侣
+          {smcpGroupTarget
+            ? `${smcpGroupTarget.memberCount || groupMembers.length || 0}人 · SMCP`
+            : isSmcp
+            ? 'SMCP · 虾群通讯'
+            : 'SiliconMate · 硅基生命数字人伴侣'}
         </span>
+        {/* 群成员按钮 */}
+        {smcpGroupTarget && (
+          <button
+            onClick={async () => {
+              if (!showGroupMembers) {
+                const info = await getGroupInfo(smcpGroupTarget.groupId)
+                if (info.ok && info.members) {
+                  setGroupMembers(info.members.map(m => ({
+                    userId: m.user_id,
+                    role: m.role,
+                    accountName: m.account_name,
+                    siliconId: m.silicon_id,
+                  })))
+                }
+              }
+              setShowGroupMembers(!showGroupMembers)
+            }}
+            style={{
+              marginLeft: '8px',
+              background: '#2a2a3a',
+              color: '#ccc',
+              border: '1px solid #333',
+              borderRadius: '6px',
+              padding: '2px 8px',
+              cursor: 'pointer',
+              fontSize: '11px',
+            }}
+          >
+            {showGroupMembers ? '收起' : '📋 成员'}
+          </button>
+        )}
+        {/* 搜索按钮 */}
+        <button
+          onClick={() => { setShowSearch(!showSearch); setSearchQuery('') }}
+          style={{
+            marginLeft: '8px',
+            background: showSearch ? '#2a5cff' : '#2a2a3a',
+            color: '#ccc',
+            border: '1px solid #333',
+            borderRadius: '6px',
+            padding: '2px 8px',
+            cursor: 'pointer',
+            fontSize: '11px',
+          }}
+        >
+          🔍
+        </button>
         {isVoiceMode && (
           <span style={{
             fontSize: '12px',
@@ -196,7 +275,78 @@ export const Chat: React.FC<ChatProps> = ({
         </span>
       </header>
 
-      {/* Messages */}
+      {/* 群成员面板 */}
+      {smcpGroupTarget && showGroupMembers && (
+        <div style={{
+          padding: '8px 20px',
+          background: '#141820',
+          borderBottom: '1px solid #222',
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '6px',
+          maxHeight: '120px',
+          overflowY: 'auto',
+        }}>
+          {groupMembers.length === 0 && (
+            <span style={{ fontSize: '11px', color: '#555' }}>加载中…</span>
+          )}
+          {groupMembers.map(m => (
+            <div key={m.userId} style={{
+              background: '#1c2030',
+              border: '1px solid #2a2a3a',
+              borderRadius: '8px',
+              padding: '4px 8px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              fontSize: '11px',
+            }}>
+              <span style={{ color: m.role === 'owner' ? '#f39c12' : '#2a5cff', fontWeight: 600 }}>
+                {m.role === 'owner' ? '👑' : '👤'}
+              </span>
+              <span style={{ color: '#e6e6e6' }}>{m.accountName || m.userId.slice(0, 8)}</span>
+              {m.siliconId && (
+                <span style={{ color: '#555', fontSize: '9px' }}>({m.siliconId})</span>
+              )}
+            </div>
+           ))}
+         </div>
+       )}
+
+      {/* 消息搜索面板 */}
+      {showSearch && (
+        <div style={{
+          padding: '6px 20px',
+          background: '#141820',
+          borderBottom: '1px solid #222',
+          display: 'flex',
+          gap: '8px',
+          alignItems: 'center',
+        }}>
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            placeholder="搜索消息内容…"
+            autoFocus
+            style={{
+              flex: 1,
+              background: '#0f1115',
+              border: '1px solid #333',
+              borderRadius: '6px',
+              padding: '4px 8px',
+              color: '#e6e6e6',
+              fontSize: '12px',
+              outline: 'none',
+            }}
+          />
+          <span style={{ fontSize: '11px', color: '#555' }}>
+            {searchQuery ? `${messages.filter(m => m.content.toLowerCase().includes(searchQuery.toLowerCase())).length} 条匹配` : ''}
+          </span>
+        </div>
+      )}
+
+       {/* Messages */}
       <div
         style={{
           flex: 1,
@@ -220,37 +370,119 @@ export const Chat: React.FC<ChatProps> = ({
           </div>
         )}
 
-        {messages.map(msg => (
-          <div
-            key={msg.id}
-            style={{
-              maxWidth: '80%',
-              padding: '10px 14px',
-              borderRadius: '12px',
-              lineHeight: '1.6',
-              fontSize: '14px',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              alignSelf: msg.role === 'user' ? 'flex-end' : 'flex-start',
-              background: msg.role === 'user' ? '#2a5cff' : '#1c2030',
-              color: '#fff',
-              borderBottomRightRadius: msg.role === 'user' ? '4px' : undefined,
-              borderBottomLeftRadius: msg.role === 'assistant' ? '4px' : undefined,
-            }}
-          >
-            {msg.content}
-            {msg.isStreaming && (
-              <span style={{
-                display: 'inline-block',
-                width: '2px',
-                height: '14px',
-                background: '#7a8aa0',
-                marginLeft: '2px',
-                animation: 'blink 1s infinite',
-              }} />
-            )}
-          </div>
-        ))}
+        {messages.map((msg, idx) => {
+          const isUser = msg.role === 'user'
+          // Search filter
+          const isSearchMatch = !searchQuery || msg.content.toLowerCase().includes(searchQuery.toLowerCase())
+          const isSearchDim = showSearch && searchQuery && !isSearchMatch
+          // Check if this is the last message in the same minute for timestamp grouping
+          const msgMinute = new Date(msg.timestamp).getMinutes()
+          const msgHour = new Date(msg.timestamp).getHours()
+          const nextMsg = messages[idx + 1]
+          const isLastInMinute = !nextMsg ||
+            new Date(nextMsg.timestamp).getMinutes() !== msgMinute ||
+            new Date(nextMsg.timestamp).getHours() !== msgHour ||
+            nextMsg.role !== msg.role
+
+          // Detect file message pattern
+          const fileMatch = msg.content.match(/📎\s*\[([^\]]+)\]\(([^)]+)\)/)
+          const isFileMsg = !!fileMatch
+
+          // Detect group sender name (pattern: 👥 senderName: content or 🦐 prefix)
+          const groupSenderMatch = isSmcp && !isUser && msg.content.match(/^(👥|🦐)\s*([^\s:：]+)[：:]\s*([\s\S]*)$/)
+
+          return (
+            <div
+              key={msg.id}
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: isUser ? 'flex-end' : 'flex-start',
+                maxWidth: '100%',
+              }}
+            >
+              {/* Group sender name */}
+              {groupSenderMatch && (
+                <span style={{
+                  fontSize: '14px',
+                  color: '#aaa',
+                  marginBottom: '2px',
+                  marginLeft: '4px',
+                }}>
+                  {groupSenderMatch[2]}
+                </span>
+              )}
+              <div
+                style={{
+                  maxWidth: '70%',
+                  padding: '10px 14px',
+                  borderRadius: '10px',
+                  lineHeight: '1.6',
+                  fontSize: '14px',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  background: isUser ? '#2a5cff' : '#2a2a3a',
+                  color: '#fff',
+                  borderBottomRightRadius: isUser ? '4px' : undefined,
+                  borderBottomLeftRadius: !isUser ? '4px' : undefined,
+                  opacity: isSearchDim ? 0.3 : 1,
+                }}
+              >
+                {isFileMsg ? (
+                  <div
+                    onClick={() => {
+                      if (fileMatch) {
+                        const fileName = fileMatch[1]
+                        const fileUrl = fileMatch[2]
+  const invoke = (window as any).__TAURI__?.core?.invoke
+                        if (invoke) {
+                          invoke('download_and_open_file', { fileUrl, fileName }).catch(console.error)
+                        } else {
+                          window.open(fileUrl, '_blank')
+                        }
+                      }
+                    }}
+                    style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
+                  >
+                    <span style={{ fontSize: '18px' }}>📎</span>
+                    <div>
+                      <div style={{ fontSize: '14px', color: '#fff' }}>{fileMatch?.[1] || '文件'}</div>
+                      <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.6)' }}>
+                        {msg.content.match(/(\d+[BKMGT]B)/)?.[1] || '点击下载'}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {highlightText(msg.content, searchQuery)}
+                    {msg.isStreaming && (
+                      <span style={{
+                        display: 'inline-block',
+                        width: '2px',
+                        height: '14px',
+                        background: '#7a8aa0',
+                        marginLeft: '2px',
+                        animation: 'blink 1s infinite',
+                      }} />
+                    )}
+                  </>
+                )}
+              </div>
+              {/* Timestamp */}
+              {isLastInMinute && (
+                <span style={{
+                  fontSize: '12px',
+                  color: '#888',
+                  marginTop: '2px',
+                  marginRight: isUser ? '4px' : undefined,
+                  marginLeft: !isUser ? '4px' : undefined,
+                }}>
+                  {formatTime(msg.timestamp)}
+                </span>
+              )}
+            </div>
+          )
+        })}
 
         {/* Status indicator */}
         {statusText && (
@@ -342,10 +574,26 @@ export const Chat: React.FC<ChatProps> = ({
         borderTop: '1px solid #222',
         gap: '10px',
       }}>
-        {/* File upload button — uses tauri-plugin-dialog */}
+        {/* SMCP标识 */}
+        {isSmcp && (
+          <span style={{
+            background: '#1a2a1a',
+            border: '1px solid #2a4a2a',
+            borderRadius: '10px',
+            padding: '0 12px',
+            color: '#4a8',
+            fontSize: '13px',
+            display: 'flex',
+            alignItems: 'center',
+          }}>
+            🦐 SMCP
+          </span>
+        )}
+
+        {/* File upload button — for both local and SMCP chats */}
         <button
           onClick={handleFileSelect}
-          title="上传图片"
+          title="上传文件/图片"
           disabled={isProcessingImage}
           style={{
             background: '#2a2a3a',
@@ -361,7 +609,8 @@ export const Chat: React.FC<ChatProps> = ({
           📎
         </button>
 
-        {/* Voice chat button */}
+        {/* Voice chat button — only for local chat */}
+        {!isSmcp && (
         <button
           onClick={onVoiceChat}
           title={isVoiceMode ? '返回日常对话' : '语音聊天'}
@@ -377,8 +626,10 @@ export const Chat: React.FC<ChatProps> = ({
         >
           🗣️
         </button>
+        )}
 
-        {/* ChatGPT button: start tunnel + open Safari */}
+        {/* ChatGPT button — only for local chat */}
+        {!isSmcp && (
         <button
           onClick={async () => {
             const invoke = (window as any).__TAURI__?.core?.invoke
@@ -405,8 +656,10 @@ export const Chat: React.FC<ChatProps> = ({
         >
           ChatGPT
         </button>
+        )}
 
-        {/* Deep think toggle */}
+        {/* Deep think toggle — only for local chat */}
+        {!isSmcp && (
         <button
           onClick={() => {
             if (!serverConnected && !serverConnecting) {
@@ -431,8 +684,10 @@ export const Chat: React.FC<ChatProps> = ({
         >
           {serverConnecting ? '⏳ 连接中' : !serverConnected ? '🧠 ✗' : deepThinkMode ? '🧠 深度' : '🧠'}
         </button>
+        )}
 
-        {/* Feishu output toggle */}
+        {/* Feishu output toggle — only for local chat */}
+        {!isSmcp && (
         <button
           onClick={() => setFeishuOutput(!feishuOutput)}
           title={feishuOutput ? '关闭飞书输出' : '输出到飞书文档/消息'}
@@ -449,8 +704,10 @@ export const Chat: React.FC<ChatProps> = ({
         >
           {feishuOutput ? '飞书✓' : '飞书'}
         </button>
+        )}
 
-        {/* Microphone button (voice input via Web Speech API) */}
+        {/* Microphone button — only for local chat */}
+        {!isSmcp && (
         <button
           onClick={handleMicInput}
           title={isRecording ? '停止语音输入' : '语音输入'}
@@ -468,6 +725,7 @@ export const Chat: React.FC<ChatProps> = ({
         >
           🎤
         </button>
+        )}
 
         {/* Text input */}
         <input
@@ -475,7 +733,7 @@ export const Chat: React.FC<ChatProps> = ({
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="说点什么…"
+          placeholder={smcpGroupTarget ? `给 ${smcpGroupTarget.groupName} 发消息…` : smcpTarget ? `给 ${smcpTarget.role} 发消息…` : '说点什么…'}
           autoFocus
           style={{
             flex: 1,
@@ -494,7 +752,7 @@ export const Chat: React.FC<ChatProps> = ({
           onClick={handleSend}
           disabled={status === 'thinking' || status === 'deep_thinking'}
           style={{
-            background: '#2a5cff',
+            background: isSmcp ? '#2a6a3a' : '#2a5cff',
             color: '#fff',
             border: 'none',
             borderRadius: '10px',
@@ -504,7 +762,7 @@ export const Chat: React.FC<ChatProps> = ({
             opacity: (status === 'thinking' || status === 'deep_thinking') ? 0.6 : 1,
           }}
         >
-          发送
+          {isSmcp ? '🦐 发送' : '发送'}
         </button>
       </div>
 

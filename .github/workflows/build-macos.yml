@@ -1,0 +1,55 @@
+name: Build macOS
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: macos-13
+            target: x86_64-apple-darwin
+            suffix: x64
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            suffix: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install frontend deps
+        working-directory: client
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: client
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: client
+          tauriScript: npx tauri
+          tagName: v__VERSION__
+          releaseName: 'SiliconMate v__VERSION__'
+          releaseBody: '硅侣 v__VERSION__ — macOS + Android'
+          args: --target ${{ matrix.target }}
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: SiliconMate-macOS-${{ matrix.suffix }}
+          path: client/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg

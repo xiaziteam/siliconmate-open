@@ -192,7 +192,7 @@ export const VoiceChat: React.FC<VoiceChatProps> = ({ onBack, sessionId, chatgpt
             border: '1px solid #333',
           }}>
             <iframe
-              src="http://localhost:5174/chatgpt.html"
+              src={(window as any).__TAURI__ ? "http://localhost:5174/chatgpt.html" : "about:blank"}
               style={{
                 width: '100%',
                 height: '100%',

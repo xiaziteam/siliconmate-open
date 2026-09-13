@@ -50,7 +50,7 @@ POST /v1/auth/login(错密码) → 401 {"ok":false,"error":"ERR_AUTH"}
 
 ## 三、边界说明（接手前必读）
 
-1. **`server/deploy.sh` 未执行** — 这是往 VPS2(鬼子虾2号 64.83.45.235) 部署 free-code + AgentChat + systemd 的生产脚本，按协作铁律生产/外发操作需 [APPROVE]，留待华虾/麦克决定。
+1. **`server/deploy.sh` 未执行** — 这是往 VPS2(鬼子虾2号 <VPS_IP>) 部署 free-code + AgentChat + systemd 的生产脚本，按协作铁律生产/外发操作需 [APPROVE]，留待华虾/麦克决定。
 2. **场景路由 7 级中的服务端 3 级**（Office读取/Office创建/深度思考）依赖 VPS 上的 free-code 服务，本地验证时不可用会降级；本地 4 级（语音/视觉/OCR/普通文本）不受影响。
 3. **深度思考等本地级** 依赖 `claude -p`（GLM-4-Flash），需本机已登录 free-code。
 4. account-service 的 `MASTER_KEY` 默认 `master-key-dev-only` 仅为开发用，生产部署走 deploy.sh 注入。

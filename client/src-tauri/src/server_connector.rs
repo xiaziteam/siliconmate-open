@@ -1,6 +1,24 @@
 use serde::Serialize;
 use std::sync::Mutex;
+use std::time::Duration;
 use tauri::Emitter;
+
+/// Debug log to file (eprintln silent in macOS release .app)
+fn debug_log(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/siliconmate-debug.log")
+    {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(f, "[{}] {}", ts, msg);
+    }
+    eprintln!("[server] {}", msg);
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub enum ServerStatus {
@@ -26,6 +44,10 @@ impl ServerConnector {
     }
 }
 
+/// P1 FIX: 用reqwest直连替代SSH+curl探活
+/// 1. 先尝试HTTPS到<YOUR_SERVER_HOST>/v1/smcp/ping (外部可达)
+/// 2. 再尝试HTTP直连VPS2:15731/health (局域网/同机可用)
+/// 3. 全部3秒超时，fail-open不阻塞UI
 #[tauri::command]
 pub async fn connect_server(
     connector: tauri::State<'_, ServerConnector>,
@@ -42,36 +64,59 @@ pub async fn connect_server(
         *status = ServerStatus::Connecting;
     }
 
-    let output = tokio::process::Command::new("ssh")
-        .args([
-            "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=no",
-            "-i", &connector.ssh_key_path,
-            &format!("root@{}", connector.server_host),
-            "curl -s http://127.0.0.1:15731/health",
-        ])
-        .output()
-        .await
-        .map_err(|e| {
-            let mut status = connector.status.lock().unwrap();
-            *status = ServerStatus::Error(format!("SSH连接失败: {}", e));
-            format!("SSH连接失败: {}", e)
-        })?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .danger_accept_invalid_certs(true)
+        .build()
+        .map_err(|e| format!("HTTP client创建失败: {}", e))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let mut status = connector.status.lock().unwrap();
-        *status = ServerStatus::Error(format!("SSH验证失败: {}", stderr));
-        return Err(format!("SSH验证失败: {}", stderr));
+    // Strategy 1: HTTPS via <YOUR_SERVER_HOST> (externally reachable)
+    debug_log("P1: trying HTTPS via <YOUR_SERVER_HOST>/v1/smcp/ping");
+    match client.get("https://<YOUR_SERVER_HOST>/v1/smcp/ping").send().await {
+        Ok(resp) => {
+            let status_code = resp.status();
+            let body = resp.text().await.unwrap_or_else(|e| format!("<read body failed: {}>", e));
+            debug_log(&format!("HTTPS ping returned {} body={}", status_code, &body[..body.len().min(200)]));
+            if status_code.is_success() {
+                let mut status = connector.status.lock().unwrap();
+                *status = ServerStatus::Connected {
+                    server_host: connector.server_host.clone(),
+                };
+                    debug_log("connected via HTTPS (SMCP ping OK)");
+                return Ok(connector.server_host.clone());
+            }
+        }
+        Err(e) => {
+            debug_log(&format!("HTTPS ping failed: {}", e));
+        }
     }
 
-    let mut status = connector.status.lock().unwrap();
-    *status = ServerStatus::Connected {
-        server_host: connector.server_host.clone(),
-    };
+    // Strategy 2: HTTP direct to VPS2:15731 (works if 15731 bound to 0.0.0.0 or same host)
+    let health_url = format!("http://{}:15731/health", connector.server_host);
+    debug_log(&format!("P1: trying HTTP direct to {}", health_url));
+    match client.get(&health_url).send().await {
+        Ok(resp) => {
+            let status_code = resp.status();
+            let body = resp.text().await.unwrap_or_else(|e| format!("<read body failed: {}>", e));
+            debug_log(&format!("HTTP direct returned {} body={}", status_code, &body[..body.len().min(200)]));
+            if status_code.is_success() {
+                let mut status = connector.status.lock().unwrap();
+                *status = ServerStatus::Connected {
+                    server_host: connector.server_host.clone(),
+                };
+                    debug_log("connected via HTTP direct (health OK)");
+                return Ok(connector.server_host.clone());
+            }
+        }
+        Err(e) => {
+            debug_log(&format!("HTTP direct failed: {}", e));
+        }
+    }
 
-    eprintln!("[server] connected to {} (zhipu-bridge OK)", connector.server_host);
-    Ok(connector.server_host.clone())
+    // All strategies failed — fail-open (UI renders normally, deep-think disabled)
+    let mut status = connector.status.lock().unwrap();
+    *status = ServerStatus::Error("服务端不可达(深度思考不可用)".into());
+    Err("服务端不可达，深度思考需AgentChat支持".into())
 }
 
 #[tauri::command]
@@ -156,7 +201,12 @@ pub async fn call_server_deep_think(
             .map_err(|e| format!("写入prompt失败: {}", e))?;
         drop(stdin);
     }
-    let echo_output = echo_child.wait_with_output().await
+    let echo_output = tokio::time::timeout(
+        Duration::from_secs(15),
+        echo_child.wait_with_output()
+    )
+        .await
+        .map_err(|_| "SSH上传prompt超时(15s)".to_string())?
         .map_err(|e| format!("SSH上传prompt失败: {}", e))?;
 
     if !echo_output.status.success() {
@@ -284,15 +334,20 @@ pub async fn call_server_office(
 
     let remote_path = format!("/tmp/siliconmate-office-{}", file_name);
 
-    let scp_output = tokio::process::Command::new("scp")
-        .args([
-            "-o", "StrictHostKeyChecking=no",
-            "-i", &connector.ssh_key_path,
-            &file_path,
-            &format!("root@{}:{}", connector.server_host, remote_path),
-        ])
-        .output()
+    let scp_output = tokio::time::timeout(
+        Duration::from_secs(30),
+        tokio::process::Command::new("scp")
+            .args([
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "ConnectTimeout=10",
+                "-i", &connector.ssh_key_path,
+                &file_path,
+                &format!("root@{}:{}", connector.server_host, remote_path),
+            ])
+            .output()
+    )
         .await
+        .map_err(|_| "SCP上传超时(30s)".to_string())?
         .map_err(|e| format!("SCP上传失败: {}", e))?;
 
     if !scp_output.status.success() {
@@ -310,25 +365,18 @@ pub async fn call_server_office(
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     let cleanup_cmd = format!("rm -f {}", remote_path);
-    let _ = tokio::process::Command::new("ssh")
-        .args([
-            "-o", "StrictHostKeyChecking=no",
-            "-i", &connector.ssh_key_path,
-            &format!("root@{}", connector.server_host),
-            &cleanup_cmd,
-        ])
-        .output()
-        .await;
+    let _ = ssh_exec(&connector.ssh_key_path, &connector.server_host, &cleanup_cmd).await;
 
     Ok(stdout.to_string())
 }
 
+/// P2 FIX: SSH执行加timeout兜底，防止channel open慢时卡75-120s
 async fn ssh_exec(
     ssh_key_path: &str,
     server_host: &str,
     command: &str,
 ) -> Result<std::process::Output, String> {
-    tokio::process::Command::new("ssh")
+    let cmd = tokio::process::Command::new("ssh")
         .args([
             "-o", "ConnectTimeout=10",
             "-o", "StrictHostKeyChecking=no",
@@ -336,8 +384,11 @@ async fn ssh_exec(
             &format!("root@{}", server_host),
             command,
         ])
-        .output()
+        .output();
+
+    tokio::time::timeout(Duration::from_secs(30), cmd)
         .await
+        .map_err(|_| "SSH执行超时(30s)".to_string())?
         .map_err(|e| format!("SSH执行失败: {}", e))
 }
 

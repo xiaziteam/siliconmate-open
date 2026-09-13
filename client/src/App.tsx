@@ -21,7 +21,10 @@ import {
   addMessage,
   updateLastAssistantMessage,
   deleteConversation,
+  SmcpTarget,
+  SmcpGroupTarget,
 } from './conversation'
+import { smcpInit, startPolling, stopPolling, sendMessage as smcpSendMessage, sendGroupMessage, uploadFile, SmcpMessage } from './smcp'
 
 interface ImageAttachment {
   path: string
@@ -29,6 +32,8 @@ interface ImageAttachment {
   ocr_text: string | null
   ocr_status: 'pending' | 'success' | 'failed' | 'not_available' | 'no_text'
   file_size: number
+  data?: string // base64 for SMCP transfer
+  type?: string // mime type for SMCP transfer
 }
 
 type AppView = 'login' | 'chat' | 'voice'
@@ -49,6 +54,8 @@ export const App: React.FC = () => {
   const [deepThinkProgress, setDeepThinkProgress] = useState<string>('')
   const [serverConnected, setServerConnected] = useState(false)
   const [serverConnecting, setServerConnecting] = useState(false)
+  const [smcpReady, setSmcpReady] = useState(false)
+  const [mySiliconId, setMySiliconId] = useState<string>('')
   const invoke = (window as any).__TAURI__?.core?.invoke
   const listen = (window as any).__TAURI__?.event?.listen
 
@@ -77,6 +84,64 @@ export const App: React.FC = () => {
       return () => clearInterval(interval)
     }
   }, [sessionId, invoke])
+
+  // Android通知点击跳转 — 监听smcp-notification-chat事件
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const { fromUser } = (e as CustomEvent).detail
+      if (!fromUser) return
+      // 找到对应对话并切换
+      const targetConv = conversations.find(c =>
+        c.smcpTarget?.userId === fromUser || c.smcpTarget?.agentId?.includes(fromUser.slice(0, 8))
+      )
+      if (targetConv) {
+        setActiveConvId(targetConv.id)
+      }
+      console.log('[硅侣] 通知跳转到对话:', fromUser)
+    }
+    window.addEventListener('smcp-notification-chat', handler)
+    return () => window.removeEventListener('smcp-notification-chat', handler)
+  }, [conversations])
+
+  // Async server connection polling — non-blocking, fail-open
+  // Moved out of handleLoginSuccess to avoid blocking UI render
+  useEffect(() => {
+    if (view !== 'chat' || !invoke || serverConnected) return
+
+    let cancelled = false
+    const tryConnect = async () => {
+      if (cancelled) return
+      setServerConnecting(true)
+      try {
+        const result = await invoke('connect_server') as string
+        if (!cancelled) {
+          console.log('[硅侣] 服务端已连接:', result)
+          setServerConnected(true)
+          setServerConnecting(false)
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          console.warn('[硅侣] 服务端连接失败(深度思考不可用):', String(e))
+          setServerConnected(false)
+          setServerConnecting(false)
+        }
+      }
+    }
+
+    // First attempt immediately
+    tryConnect()
+    // Then poll every 10 seconds until connected
+    const interval = setInterval(() => {
+      if (!serverConnected && !cancelled) {
+        tryConnect()
+      }
+    }, 10000)
+
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [view, invoke, serverConnected])
 
   // Check agent health when entering chat
   useEffect(() => {
@@ -108,30 +173,27 @@ export const App: React.FC = () => {
     return () => { if (unlisten) unlisten() }
   }, [listen])
 
-  const handleLoginSuccess = async (sid: string, session?: { access_token: string; cookies: any; expires: string }, isActivated?: boolean, plan?: string) => {
+  const handleLoginSuccess = async (sid: string, session?: { access_token: string; cookies: any; expires: string }, isActivated?: boolean, plan?: string, siliconId?: string) => {
     setSessionId(sid)
     if (session) setChatgptSession(session)
     setActivated(isActivated ?? false)
     setActivationPlan(plan ?? null)
+    if (siliconId) setMySiliconId(siliconId)
 
-    // Auto-connect to VPS2 server (awaited with timeout)
-    if (invoke) {
-      setServerConnecting(true)
-      try {
-        const result = await Promise.race([
-          invoke('connect_server') as Promise<string>,
-          new Promise<string>((_, reject) => setTimeout(() => reject('连接超时'), 15000)),
-        ])
-        console.log('[硅侣] 服务端已连接:', result)
-        setServerConnected(true)
-      } catch (e: any) {
-        console.warn('[硅侣] 服务端连接失败(深度思考不可用):', String(e))
-        setServerConnected(false)
-      }
-      setServerConnecting(false)
-    }
-
+    // P0 FIX: 先渲染UI，connect_server由useEffect异步轮询(fail-open，不阻塞)
     setView('chat')
+
+    // SMCP: 注册Agent + 启动消息轮询(异步，不阻塞)
+    smcpInit(sid).then(smcpOk => {
+      if (smcpOk) {
+        setSmcpReady(true)
+        startPolling((msg: SmcpMessage) => {
+          handleSmcpIncomingMessage(msg)
+        })
+      }
+    }).catch(e => {
+      console.warn('[硅侣] SMCP初始化失败:', e)
+    })
   }
 
   const handleGuestEnter = () => {
@@ -143,6 +205,119 @@ export const App: React.FC = () => {
   const handleActivate = useCallback((plan: string) => {
     setActivated(true)
     setActivationPlan(plan)
+  }, [])
+
+  const updateConversation = useCallback((id: string, updater: (c: Conversation) => Conversation) => {
+    setConversations(prev => prev.map(c => c.id === id ? updater(c) : c))
+  }, [])
+
+  /** SMCP: 打开/创建与某好友的对话 */
+  const handleOpenSmcpChat = useCallback((target: { userId: string; agentId: string; role: string; myAgentId: string }) => {
+    // 查找是否已有该好友的对话
+    const existing = conversations.find(c =>
+      c.smcpTarget && c.smcpTarget.userId === target.userId
+    )
+    if (existing) {
+      setActiveConvId(existing.id)
+      return
+    }
+    // 创建新SMCP对话
+    const smcpTarget: SmcpTarget = {
+      userId: target.userId,
+      agentId: target.agentId,
+      role: target.role,
+      myAgentId: target.myAgentId,
+    }
+    const conv = createConversation(undefined, smcpTarget)
+    setConversations(prev => [conv, ...prev])
+    setActiveConvId(conv.id)
+  }, [conversations])
+
+  /** SMCP: 点击群聊打开群对话 */
+  const handleOpenGroupChat = useCallback((groupId: string, groupName: string) => {
+    const existing = conversations.find(c =>
+      c.smcpGroupTarget && c.smcpGroupTarget.groupId === groupId
+    )
+    if (existing) {
+      setActiveConvId(existing.id)
+      return
+    }
+    const smcpGroupTarget: SmcpGroupTarget = { groupId, groupName }
+    const conv = createConversation(undefined, undefined, smcpGroupTarget)
+    setConversations(prev => [conv, ...prev])
+    setActiveConvId(conv.id)
+  }, [conversations])
+
+  /** SMCP: 收到中继消息，放入对应对话 */
+  const handleSmcpIncomingMessage = useCallback((msg: SmcpMessage) => {
+    const fromAgentId = msg.from_agent || ''
+    const groupId = msg.params?.group_id
+    const text = msg.params?.text || msg.params?.content || msg.params?.message || ''
+    const fileId = msg.params?.file_id
+    const fileName = msg.params?.filename || fileId
+
+    // 构建显示内容
+    let displayText = ''
+    if (fileId) {
+      const fileUrl = `https://<YOUR_SERVER_HOST>/v1/smcp/file/download/${fileId}`
+      displayText = groupId
+        ? `👥 📎 [${fileName}](${fileUrl})` + (text ? `\n👥 ${text}` : '')
+        : `🦐 📎 [${fileName}](${fileUrl})` + (text ? `\n🦐 ${text}` : '')
+    } else {
+      displayText = groupId ? `👥 ${text}` : `🦐 ${text}`
+    }
+
+    // Android推送通知
+    const NB = (window as any).NativeBridge
+    const notifTitle = groupId ? '👥 群聊消息' : '🦐 虾群消息'
+    const notifBody = fileId ? `📎 ${fileName}` + (text ? ` - ${text.slice(0, 60)}` : '') : text.slice(0, 100)
+    if (NB?.showNotification) {
+      try { NB.showNotification(notifTitle, notifBody) } catch (e) { console.warn('[SMCP] showNotification error:', e) }
+    }
+
+    const botMsg: Message = {
+      id: `smcp_${msg.msg_id}`,
+      role: 'assistant',
+      content: displayText,
+      isStreaming: false,
+      timestamp: Date.now(),
+    }
+
+    // 用函数式更新避免闭包过期 — 始终拿到最新conversations
+    setConversations(prev => {
+      // 群聊消息：找对应群对话
+      if (groupId) {
+        const groupConv = prev.find(c =>
+          c.smcpGroupTarget && c.smcpGroupTarget.groupId === groupId
+        )
+        if (groupConv) {
+          return prev.map(c => c.id === groupConv.id ? addMessage(c, botMsg) : c)
+        } else {
+          // 新群对话
+          const groupTarget: SmcpGroupTarget = { groupId, groupName: groupId }
+          const conv = createConversation(undefined, undefined, groupTarget)
+          const updatedConv = addMessage(conv, botMsg)
+          return [updatedConv, ...prev]
+        }
+      }
+      // 私聊消息
+      const targetConv = prev.find(c =>
+        c.smcpTarget && c.smcpTarget.agentId === fromAgentId
+      )
+      if (targetConv) {
+        return prev.map(c => c.id === targetConv.id ? addMessage(c, botMsg) : c)
+      } else {
+        const smcpTarget: SmcpTarget = {
+          userId: '',
+          agentId: fromAgentId,
+          role: fromAgentId,
+          myAgentId: '',
+        }
+        const conv = createConversation(undefined, smcpTarget)
+        const updatedConv = addMessage(conv, botMsg)
+        return [updatedConv, ...prev]
+      }
+    })
   }, [])
 
   const handleNewConversation = useCallback(() => {
@@ -162,10 +337,6 @@ export const App: React.FC = () => {
     }
   }, [activeConvId])
 
-  const updateConversation = useCallback((id: string, updater: (c: Conversation) => Conversation) => {
-    setConversations(prev => prev.map(c => c.id === id ? updater(c) : c))
-  }, [])
-
   const handleSendMessage = useCallback(async (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean) => {
     if (!text.trim() && (!attachments || attachments.length === 0)) return
 
@@ -176,6 +347,11 @@ export const App: React.FC = () => {
       setConversations(prev => [conv, ...prev])
       setActiveConvId(convId)
     }
+
+    // 检查是否SMCP对话
+    const currentConv = conversations.find(c => c.id === convId)
+    const smcpTarget = currentConv?.smcpTarget
+    const smcpGroupTarget = currentConv?.smcpGroupTarget
 
     let displayContent = text
     if (attachments && attachments.length > 0) {
@@ -195,6 +371,109 @@ export const App: React.FC = () => {
       timestamp: Date.now(),
     }
     updateConversation(convId, c => addMessage(c, userMsg))
+
+    // --- SMCP群聊: 走群消息API ---
+    if (smcpGroupTarget) {
+      setStatus('thinking')
+      try {
+        // 如果有附件，先读文件转base64再上传
+        let fileParams: any = {}
+        if (attachments && attachments.length > 0) {
+          const att = attachments[0]
+          let base64Data = att.data
+          if (!base64Data && att.path) {
+            try {
+              const inv = (window as any).__TAURI__?.invoke
+              if (inv) {
+                const readResult = await inv('read_file_base64', { path: att.path })
+                base64Data = readResult
+              }
+            } catch (e) { console.warn('[SMCP] read file base64 failed:', e) }
+          }
+          if (base64Data) {
+            const uploadResult = await uploadFile(att.name, base64Data, att.type || 'image/png')
+            if (uploadResult.ok && uploadResult.file_id) {
+              fileParams = { file_id: uploadResult.file_id, filename: uploadResult.filename, file_size: uploadResult.size }
+            }
+          }
+        }
+        const result = await sendGroupMessage(smcpGroupTarget.groupId, { content: text, ...fileParams })
+        if (result?.error) {
+          const errMsg: Message = {
+            id: `err_${Date.now()}`,
+            role: 'assistant',
+            content: `⚠️ 发送失败: ${result.error}`,
+            isStreaming: false,
+            timestamp: Date.now(),
+          }
+          updateConversation(convId, c => addMessage(c, errMsg))
+        }
+        setStatus('idle')
+        return
+      } catch (e) {
+        setStatus('idle')
+        return
+      }
+    }
+
+    // --- SMCP对话: 走消息中继 ---
+    if (smcpTarget) {
+      setStatus('thinking')
+      try {
+        // 如果有附件，先读文件转base64再上传
+        let fileParams: any = {}
+        if (attachments && attachments.length > 0) {
+          const att = attachments[0]
+          let base64Data = att.data
+          if (!base64Data && att.path) {
+            try {
+              const inv = (window as any).__TAURI__?.invoke
+              if (inv) {
+                const readResult = await inv('read_file_base64', { path: att.path })
+                base64Data = readResult
+              }
+            } catch (e) { console.warn('[SMCP] read file base64 failed:', e) }
+          }
+          if (base64Data) {
+            const uploadResult = await uploadFile(att.name, base64Data, att.type || 'image/png')
+            if (uploadResult.ok && uploadResult.file_id) {
+              fileParams = { file_id: uploadResult.file_id, filename: uploadResult.filename, file_size: uploadResult.size }
+            }
+          }
+        }
+        const result = await smcpSendMessage(
+          smcpTarget.agentId,
+          smcpTarget.userId,
+          text,
+          fileParams
+        )
+        if (result?.error) {
+          const errMsg: Message = {
+            id: `err_${Date.now()}`,
+            role: 'assistant',
+            content: `⚠️ 发送失败: ${result.error}`,
+            isStreaming: false,
+            timestamp: Date.now(),
+          }
+          updateConversation(convId, c => addMessage(c, errMsg))
+        }
+        // 消息已发出，对方回复由poll轮询回来
+        setStatus('idle')
+      } catch (e: any) {
+        const errMsg: Message = {
+          id: `err_${Date.now()}`,
+          role: 'assistant',
+          content: `⚠️ 发送失败: ${String(e)}`,
+          isStreaming: false,
+          timestamp: Date.now(),
+        }
+        updateConversation(convId, c => addMessage(c, errMsg))
+        setStatus('error')
+      }
+      return
+    }
+
+    // --- 本地AI对话: 原有逻辑 ---
 
     let ocrContext: string | undefined
     if (attachments && attachments.length > 0) {
@@ -396,6 +675,10 @@ export const App: React.FC = () => {
         activated={activated}
         plan={activationPlan}
         onActivate={handleActivate}
+        onOpenSmcpChat={handleOpenSmcpChat}
+        onOpenGroupChat={handleOpenGroupChat}
+        accountId={sessionId}
+        mySiliconId={mySiliconId}
       />
       <div style={{ flex: 1, overflow: 'hidden' }}>
         <Chat
@@ -407,6 +690,8 @@ export const App: React.FC = () => {
           serverConnecting={serverConnecting}
           messages={activeMessages}
           isVoiceMode={isVoiceMode}
+          smcpTarget={activeConversation?.smcpTarget}
+          smcpGroupTarget={activeConversation?.smcpGroupTarget}
         />
       </div>
     </div>

@@ -1,40 +1,49 @@
-# 硅侣 SiliconMate V3.0
+# 硅侣 SiliconMate
 
-AI助手桌面应用 — Tauri2 + Rust + React
+AI助手 + SMCP即时通讯 — macOS + Android 跨平台应用
 
-## 架构
+## 功能
 
-- **客户端**: Tauri2桌面壳 + React前端 + Rust后端
-- **服务端**: VPS2部署 (free-code + zhipu-bridge + AgentChat)
-- **通信**: MCP Proxy WebSocket + SSH exec
+- **AI对话**: 多模型路由（ChatGPT/GLM/DeepSeek）
+- **SMCP通讯**: 好友聊天、群聊、文件传输
+- **OCR识别**: 截图识别文字（中英双语）
+- **跨平台**: macOS (Tauri2) + Android (Kotlin + WebView)
 
-## 场景路由 (7级优先级)
+## 技术栈
 
-1. 语音 → Obscura CDP (ChatGPT Voice直通)
-2. Office读取 → 服务端 (server_office_read)
-3. Office创建 → 服务端 (server_office_create)
-4. 视觉分析 → 本地 (claude -p + 图片base64)
-5. 图片OCR → 本地 (Tesseract)
-6. 深度思考 → 服务端 (server_deep_think)
-7. 普通文本 → 本地 (claude -p → GLM-4-Flash)
+- **前端**: React + TypeScript
+- **macOS壳**: Tauri2 + Rust
+- **Android壳**: Kotlin + WebView + NativeBridge
+- **服务端**: Node.js + SQLite
 
-## 快速开始
+## 构建
+
+### macOS
 
 ```bash
-# 客户端开发
 cd client
 npm install
-cd src-tauri && cargo build && cd ..
-npm run tauri dev
-
-# 服务端部署
-cd server
-bash deploy.sh
+npx tauri build
 ```
 
-## V3.0 融合来源
+### Android
 
-- **siliconmate-v2**: 场景路由 + 输出过滤 + MCP代理 + AgentChat + React UI
-- **magic-chatgpt-app**: 账号服务 + ChatGPT编排器 + Cookie同步 + sing-box隧道
+```bash
+cd android
+./gradlew assembleDebug
+```
 
-详见 `docs/V3-FUSION-PLAN.md`
+## 配置
+
+复制 `.env.example` 为 `.env`，填入你的服务端地址和API密钥：
+
+```bash
+cp .env.example .env
+# 编辑 .env 填入真实值
+```
+
+所有 `<YOUR_SERVER_HOST>` 占位符需替换为你的实际服务器域名或IP。
+
+## 许可证
+
+MIT

@@ -1,0 +1,984 @@
+package com.xiaziteam.siliconmate
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.net.VpnService
+import android.os.Build
+import android.os.Bundle
+import android.provider.Settings
+import android.util.Log
+import android.view.View
+import android.view.WindowManager
+import android.webkit.ConsoleMessage
+import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.ProgressBar
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import com.google.gson.Gson
+import kotlinx.coroutines.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+
+class MainActivity : AppCompatActivity() {
+
+    private lateinit var webView: WebView
+    private lateinit var progressBar: ProgressBar
+    private val httpClient = OkHttpClient()
+    private val gson = Gson()
+    private val scope = MainScope()
+
+    private var tunnelConfig: TunnelConfig? = null
+    private var currentPlan: String? = null
+    private var isTunnelConnected = false
+
+    companion object {
+        private const val TAG = "SiliconMate"
+        private const val VPN_REQUEST_CODE = 1001
+        private const val NOTIF_PERMISSION_CODE = 1002
+        private const val AUDIO_PERMISSION_CODE = 1003
+        var instance: MainActivity? = null
+            private set
+        @JvmStatic
+        private var isForeground: Boolean = false
+        @JvmStatic
+        fun isInForeground(): Boolean = isForeground
+    }
+
+    // File picker activity result launcher
+    private val filePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let {
+            val fileName = getFileNameFromUri(it)
+            // Notify WebView with the selected file info
+            webView.post {
+                webView.evaluateJavascript(
+                    "if(window.__siliconmate_native) window.__siliconmate_native.onFilePicked('${it}','${fileName?.replace("'", "\\'")}')",
+                    null
+                )
+            }
+        }
+    }
+
+    private var pendingFilePickCallback: String? = null
+
+    private fun getFileNameFromUri(uri: Uri): String? {
+        var name: String? = null
+        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (nameIndex >= 0) name = cursor.getString(nameIndex)
+            }
+        }
+        return name
+    }
+
+    // --- Broadcast receiver for tunnel status + JS injection ---
+    private val tunnelReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                "com.xiaziteam.siliconmate.TUNNEL_CONNECTED" -> {
+                    isTunnelConnected = true
+                    currentPlan = intent.getStringExtra("plan") ?: "basic"
+                    webView.post {
+                        webView.evaluateJavascript(
+                            "if(window.__siliconmate_native) window.__siliconmate_native.onTunnelConnected('$currentPlan')", null
+                        )
+                    }
+                    Log.i(TAG, "Tunnel connected, plan=$currentPlan")
+                }
+                "com.xiaziteam.siliconmate.INJECT_JS" -> {
+                    val js = intent.getStringExtra("js") ?: ""
+                    if (js.isNotEmpty()) {
+                        webView.post {
+                            webView.evaluateJavascript(js, null)
+                        }
+                        Log.i(TAG, "JS injected: ${js.take(80)}")
+                    }
+                }
+            }
+        }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        instance = this
+
+        // Request notification permission (Android 13+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
+        }
+
+        // Full screen
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        )
+
+        setContentView(R.layout.activity_main)
+
+        progressBar = findViewById(R.id.progressBar)
+        webView = findViewById(R.id.webView)
+
+        // Check if launched from Agent deep link
+        handleIntent(intent)
+
+        // Configure WebView
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            allowFileAccess = true
+            allowContentAccess = true
+            allowFileAccessFromFileURLs = true
+            allowUniversalAccessFromFileURLs = true
+            mediaPlaybackRequiresUserGesture = false
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            cacheMode = WebSettings.LOAD_DEFAULT
+            userAgentString = userAgentString + " SiliconMate/1.0"
+        }
+
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                // Allow only our own URLs and necessary external URLs
+                val url = request?.url?.toString() ?: return false
+                if (url.startsWith("file:///android_asset/") ||
+                    url.startsWith("https://<YOUR_SERVER_HOST>") ||
+                    url.startsWith("http://localhost")
+                ) {
+                    return false
+                }
+                // Open other URLs in external browser
+                val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                startActivity(intent)
+                return true
+            }
+
+            override fun onPageFinished(view: WebView?, url: String?) {
+                super.onPageFinished(view, url)
+                progressBar.visibility = View.GONE
+            }
+        }
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                Log.d(TAG, "JS: ${consoleMessage?.message()} (${consoleMessage?.sourceId()}:${consoleMessage?.lineNumber()})")
+                return true
+            }
+        }
+
+        // JavaScript bridge for native functions
+        webView.addJavascriptInterface(SiliconMateBridge(), "NativeBridge")
+
+        // Load the React frontend from assets
+        webView.loadUrl("file:///android_asset/dist/index.html")
+
+        // Request permissions
+        requestPermissions()
+
+        // Register tunnel + JS injection broadcast receiver
+        val filter = IntentFilter("com.xiaziteam.siliconmate.TUNNEL_CONNECTED")
+        filter.addAction("com.xiaziteam.siliconmate.INJECT_JS")
+        registerReceiver(tunnelReceiver, filter)
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent?) {
+        val action = intent?.action ?: return
+        val data = intent.data ?: return
+        if (action == Intent.ACTION_VIEW && data.scheme == "siliconmate" && data.host == "agent") {
+            when (data.path) {
+                "/start" -> startAgentServiceInternal()
+                "/stop" -> stopService(Intent(this, AgentService::class.java))
+            }
+        }
+    }
+
+    private fun startAgentServiceInternal() {
+        if (!AgentService.isRunning) {
+            startService(Intent(this, AgentService::class.java))
+        }
+        Toast.makeText(this, "Agent服务已启动 :18083", Toast.LENGTH_SHORT).show()
+    }
+
+    /** SMCP消息推送给前端 */
+    fun pushSmcpMessages(messagesJson: String) {
+        webView.post {
+            webView.evaluateJavascript(
+                "if(window.__siliconmate_native) window.__siliconmate_native.onSmcpMessages('$messagesJson')", null
+            )
+        }
+    }
+
+    private fun requestPermissions() {
+        // Notification permission (Android 13+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    NOTIF_PERMISSION_CODE
+                )
+            }
+        }
+        // Audio recording permission (for voice input)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(Manifest.permission.RECORD_AUDIO),
+                AUDIO_PERMISSION_CODE
+            )
+        }
+    }
+
+    // --- JavaScript Bridge ---
+    inner class SiliconMateBridge {
+        @JavascriptInterface
+        fun activate(code: String) {
+            scope.launch {
+                try {
+                    val result = validateCode(code)
+                    if (result.ok && result.data != null) {
+                        currentPlan = result.data.plan
+                        tunnelConfig = result.data.tunnel
+                        withContext(Dispatchers.Main) {
+                            startVpnTunnel()
+                        }
+                    } else {
+                        withContext(Dispatchers.Main) {
+                            webView.evaluateJavascript(
+                                "if(window.__siliconmate_native) window.__siliconmate_native.onActivateError('激活码无效')", null
+                            )
+                        }
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        webView.evaluateJavascript(
+                            "if(window.__siliconmate_native) window.__siliconmate_native.onActivateError('${e.message}')", null
+                        )
+                    }
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun disconnectTunnel() {
+            stopService(Intent(this@MainActivity, TunnelVpnService::class.java))
+            isTunnelConnected = false
+            webView.evaluateJavascript(
+                "if(window.__siliconmate_native) window.__siliconmate_native.onTunnelDisconnected()", null
+            )
+        }
+
+        @JavascriptInterface
+        fun isTunnelActive(): Boolean = isTunnelConnected
+
+        @JavascriptInterface
+        fun getAppVersion(): String = "1.0.0"
+
+        @JavascriptInterface
+        fun getPlatform(): String = "android"
+
+        // --- Agent模式API ---
+
+        @JavascriptInterface
+        fun startAgentService() {
+            if (!AgentService.isRunning) {
+                startService(Intent(this@MainActivity, AgentService::class.java))
+            }
+            // 检查无障碍服务是否开启
+            if (!isAccessibilityEnabled()) {
+                webView.post {
+                    webView.evaluateJavascript(
+                        "if(window.__siliconmate_native) window.__siliconmate_native.onAgentStatus('need_a11y')", null
+                    )
+                }
+            } else {
+                webView.post {
+                    webView.evaluateJavascript(
+                        "if(window.__siliconmate_native) window.__siliconmate_native.onAgentStatus('ready')", null
+                    )
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun stopAgentService() {
+            stopService(Intent(this@MainActivity, AgentService::class.java))
+        }
+
+        @JavascriptInterface
+        fun isAgentRunning(): Boolean = AgentService.isRunning
+
+        @JavascriptInterface
+        fun isAccessibilityEnabled(): Boolean {
+            val service = "${packageName}/${packageName}.AgentAccessibilityService"
+            val enabledServices = Settings.Secure.getString(
+                contentResolver,
+                Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            ) ?: return false
+            return enabledServices.contains(service)
+        }
+
+        @JavascriptInterface
+        fun openAccessibilitySettings() {
+            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        }
+
+        // --- SMCP消息API ---
+
+        @JavascriptInterface
+        fun smcpStart(userId: String, agentId: String) {
+            val intent = Intent(this@MainActivity, SmcpAgentService::class.java).apply {
+                putExtra("user_id", userId)
+                putExtra("agent_id", agentId)
+            }
+            startService(intent)
+        }
+
+        @JavascriptInterface
+        fun smcpStop() {
+            stopService(Intent(this@MainActivity, SmcpAgentService::class.java))
+        }
+
+        @JavascriptInterface
+        fun smcpIsRunning(): Boolean = SmcpAgentService.isRunning
+
+        @JavascriptInterface
+        fun smcpSendMessage(fromAgent: String, toAgent: String, toUser: String,
+                           msgType: String, method: String, paramsJson: String): String {
+            val service = SmcpAgentService::class.java
+            // SmcpAgentService是单例模式，通过companion访问
+            // 实际通过service实例调用
+            return try {
+                // 直接HTTP调用
+                val json = org.json.JSONObject().apply {
+                    put("from_agent", fromAgent)
+                    put("to_agent", toAgent)
+                    put("to_user", toUser)
+                    put("type", msgType)
+                    put("method", method)
+                    put("params", org.json.JSONObject(paramsJson))
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/message/send")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpFriendRequest(toUserId: String, message: String, permsJson: String): String {
+            return try {
+                val json = org.json.JSONObject().apply {
+                    put("to_user_id", toUserId)
+                    put("message", message)
+                    put("permissions", org.json.JSONObject(permsJson))
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/request")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpFriendList(): String {
+            return try {
+                val body = "{}".toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/list")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpFriendAccept(requestId: String, permsJson: String): String {
+            return try {
+                val json = org.json.JSONObject().apply {
+                    put("request_id", requestId)
+                    put("permissions", org.json.JSONObject(permsJson))
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/accept")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpSetPermissions(friendUserId: String, permsJson: String): String {
+            return try {
+                val json = org.json.JSONObject().apply {
+                    put("user_id", friendUserId)
+                    put("permissions", org.json.JSONObject(permsJson))
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/setPermissions")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpFriendRemove(friendUserId: String): String {
+            return try {
+                val json = org.json.JSONObject().apply { put("user_id", friendUserId) }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/remove")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpLookup(siliconId: String): String {
+            return try {
+                val json = org.json.JSONObject().apply {
+                    put("silicon_id", siliconId)
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/lookup")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpPendingRequests(): String {
+            return try {
+                val body = "{}".toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/requests")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpFriendRequestBySiliconId(siliconId: String, message: String, permsJson: String): String {
+            return try {
+                val json = org.json.JSONObject().apply {
+                    put("to_user_id", "")
+                    put("to_silicon_id", siliconId)
+                    put("message", message)
+                    put("permissions", org.json.JSONObject(permsJson))
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/friend/request")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        // --- 群聊API ---
+
+        @JavascriptInterface
+        fun smcpGroupCreate(name: String, memberIdsJson: String): String {
+            return try {
+                val memberIds = org.json.JSONArray(memberIdsJson)
+                val json = org.json.JSONObject().apply {
+                    put("name", name)
+                    put("member_ids", memberIds)
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/group/create")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpGroupList(): String {
+            return try {
+                val body = "{}".toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/group/list")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpGroupInfo(groupId: String): String {
+            return try {
+                val json = org.json.JSONObject().apply {
+                    put("group_id", groupId)
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/group/info")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpGroupLeave(groupId: String): String {
+            return try {
+                val json = org.json.JSONObject().apply {
+                    put("group_id", groupId)
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/group/leave")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun smcpGroupMessageSend(groupId: String, type: String, method: String, paramsJson: String): String {
+            return try {
+                val json = org.json.JSONObject().apply {
+                    put("from_agent", SmcpAgentService.agentId)
+                    put("group_id", groupId)
+                    put("type", type)
+                    put("method", method)
+                    put("params", org.json.JSONObject(paramsJson))
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/group/message/send")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        // --- 文件上传API ---
+
+        @JavascriptInterface
+        fun smcpFileUpload(filename: String, base64Data: String, contentType: String): String {
+            return try {
+                val json = org.json.JSONObject().apply {
+                    put("filename", filename)
+                    put("data", base64Data)
+                    put("content_type", contentType)
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/file/upload")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        /** 通过multipart上传本地文件 */
+        @JavascriptInterface
+        fun smcpFileUploadByPath(filePath: String): String {
+            return try {
+                val file = java.io.File(filePath)
+                if (!file.exists()) return """{"ok":false,"error":"File not found"}"""
+                val mimeType = android.webkit.MimeTypeMap.getSingleton()
+                    .getMimeTypeFromExtension(file.extension) ?: "application/octet-stream"
+                val requestBody = file.asRequestBody(mimeType.toMediaType())
+                val multipart = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("file", file.name, requestBody)
+                    .addFormDataPart("sender_id", SmcpAgentService.userId)
+                    .build()
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/smcp/file/upload")
+                    .header("X-Account-Id", SmcpAgentService.userId)
+                    .post(multipart)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        // --- OCR API ---
+
+        @JavascriptInterface
+        fun ocrExtractText(imagePath: String): String {
+            return try {
+                // Use Google ML Kit TextRecognizer for OCR
+                // ChineseTextRecognizerOptions supports both Chinese and Latin scripts
+                // Requires: com.google.mlkit:text-recognition-chinese:16.0.1
+                val inputImage = com.google.mlkit.vision.common.InputImage.fromFilePath(
+                    this@MainActivity, android.net.Uri.parse(imagePath)
+                )
+                val recognizer = com.google.mlkit.vision.text.TextRecognition.getClient(
+                    com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions.Builder().build()
+                )
+                recognizer.process(inputImage)
+                    .addOnSuccessListener { result ->
+                        val text = result.text
+                        webView.evaluateJavascript(
+                            "if(window.__siliconmate_native) window.__siliconmate_native.onOcrResult('${text.replace("'", "\\'")}')",
+                            null
+                        )
+                    }
+                    .addOnFailureListener { e ->
+                        Log.w(TAG, "ML Kit OCR error: ${e.message}")
+                        webView.evaluateJavascript(
+                            "if(window.__siliconmate_native) window.__siliconmate_native.onOcrError('${e.message?.replace("'", "\\'")}')",
+                            null
+                        )
+                    }
+                """{"ok":true,"status":"processing"}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}","text":""}"""
+            }
+        }
+
+        // --- 文件选择器 ---
+
+        @JavascriptInterface
+        fun pickFile(): String {
+            return try {
+                filePickerLauncher.launch(arrayOf("*/*"))
+                """{"ok":true,"status":"picking"}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        /** 下载文件到app私有目录并打开 */
+        @JavascriptInterface
+        fun downloadAndOpenFile(fileUrl: String, fileName: String): String {
+            return try {
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val request = Request.Builder().url(fileUrl).build()
+                        val response = httpClient.newCall(request).execute()
+                        val responseBody = response.body ?: return@launch
+                        val safeName = fileName.ifEmpty { "download_${System.currentTimeMillis()}" }
+                        val outFile = java.io.File(filesDir, safeName)
+                        outFile.outputStream().use { output ->
+                            responseBody.byteStream().use { input ->
+                                input.copyTo(output)
+                            }
+                        }
+                        // Open file via Intent
+                        withContext(Dispatchers.Main) {
+                            try {
+                                val uri = androidx.core.content.FileProvider.getUriForFile(
+                                    this@MainActivity,
+                                    "${packageName}.fileprovider",
+                                    outFile
+                                )
+                                val intent = Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(uri, android.webkit.MimeTypeMap.getSingleton()
+                                        .getMimeTypeFromExtension(outFile.extension) ?: "*/*")
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                startActivity(intent)
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Cannot open file, saved to: ${outFile.absolutePath}")
+                                Toast.makeText(this@MainActivity, "文件已保存: ${outFile.name}", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            Toast.makeText(this@MainActivity, "下载失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                """{"ok":true}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun login(accountName: String, password: String): String {
+            return try {
+                val json = org.json.JSONObject().apply {
+                    put("account_name", accountName)
+                    put("password", password)
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/auth/login")
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+
+        @JavascriptInterface
+        fun setUserId(userId: String) {
+             SmcpAgentService.userId = userId
+             Log.i(TAG, "NativeBridge setUserId: $userId")
+         }
+
+        @JavascriptInterface
+        fun showNotification(title: String, content: String) {
+            Log.d(TAG, "showNotification called: title=$title content=$content")
+            try {
+                val channelId = "smcp_messages"
+                val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val channel = android.app.NotificationChannel(channelId, "SMCP消息", android.app.NotificationManager.IMPORTANCE_HIGH)
+                    notificationManager.createNotificationChannel(channel)
+                }
+                val notification = android.app.Notification.Builder(this@MainActivity, channelId)
+                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setContentTitle(title)
+                    .setContentText(content)
+                    .setAutoCancel(true)
+                    .build()
+                notificationManager.notify(System.currentTimeMillis().toInt(), notification)
+                Log.d(TAG, "showNotification posted successfully")
+            } catch (e: Exception) {
+                Log.e(TAG, "showNotification error: ${e.message}")
+            }
+        }
+
+        @JavascriptInterface
+        fun register(accountName: String, password: String): String {
+            return try {
+                val json = org.json.JSONObject().apply {
+                    put("account_name", accountName)
+                    put("password", password)
+                }
+                val body = json.toString().toRequestBody("application/json".toMediaType())
+                val request = Request.Builder()
+                    .url("https://<YOUR_SERVER_HOST>/v1/auth/register")
+                    .post(body)
+                    .build()
+                val response = httpClient.newCall(request).execute()
+                response.body?.string() ?: """{"ok":false}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message}"}"""
+            }
+        }
+    }
+
+    private suspend fun validateCode(code: String): ValidateResponse {
+        return withContext(Dispatchers.IO) {
+            val json = gson.toJson(mapOf("code" to code))
+            val body = json.toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("https://<YOUR_SERVER_HOST>/v1/code/validate")
+                .post(body)
+                .build()
+            val response = httpClient.newCall(request).execute()
+            val respBody = response.body?.string() ?: throw Exception("Empty response")
+            if (!response.isSuccessful) throw Exception("HTTP ${response.code}")
+            gson.fromJson(respBody, ValidateResponse::class.java)
+                ?: throw Exception("Parse error")
+        }
+    }
+
+    private fun startVpnTunnel() {
+        val cfg = tunnelConfig ?: return
+        val intent = VpnService.prepare(this)
+        if (intent != null) {
+            startActivityForResult(intent, VPN_REQUEST_CODE)
+        } else {
+            launchTunnel()
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == VPN_REQUEST_CODE) {
+            if (resultCode == RESULT_OK) {
+                launchTunnel()
+            } else {
+                webView.evaluateJavascript(
+                    "if(window.__siliconmate_native) window.__siliconmate_native.onActivateError('VPN权限被拒绝')", null
+                )
+            }
+        }
+    }
+
+    private fun launchTunnel() {
+        val cfg = tunnelConfig ?: return
+        val intent = Intent(this, TunnelVpnService::class.java).apply {
+            putExtra("server", cfg.server)
+            putExtra("server_port", cfg.server_port)
+            putExtra("uuid", cfg.uuid)
+            putExtra("flow", cfg.flow)
+            putExtra("server_name", cfg.server_name)
+            putExtra("public_key", cfg.public_key)
+            putExtra("short_id", cfg.short_id)
+            putStringArrayListExtra("route_domains", ArrayList(cfg.route_domains))
+            putExtra("plan", currentPlan ?: "basic")
+        }
+        startService(intent)
+
+        webView.evaluateJavascript(
+            "if(window.__siliconmate_native) window.__siliconmate_native.onTunnelConnecting()", null
+        )
+    }
+
+    override fun onResume() {
+        super.onResume()
+        isForeground = true
+        // 处理通知点击带来的intent
+        intent?.getStringExtra("smcp_from_user")?.let { fromUser ->
+            if (fromUser.isNotEmpty()) {
+                webView.evaluateJavascript(
+                    "if(window.__siliconmate_native) window.__siliconmate_native.onNotificationChatOpen('$fromUser')", null
+                )
+            }
+            intent?.removeExtra("smcp_from_user")
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isForeground = false
+    }
+
+    override fun onDestroy() {
+        instance = null
+        super.onDestroy()
+        scope.cancel()
+        try { unregisterReceiver(tunnelReceiver) } catch (_: Exception) {}
+    }
+
+    @Deprecated("Use onBackPressedDispatcher")
+    override fun onBackPressed() {
+        if (webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            @Suppress("DEPRECATION")
+            super.onBackPressed()
+        }
+    }
+
+    // --- Data classes ---
+    data class TunnelConfig(
+        val server: String,
+        val server_port: Int,
+        val uuid: String,
+        val flow: String,
+        val server_name: String,
+        val public_key: String,
+        val short_id: String,
+        val route_domains: List<String>
+    )
+
+    data class ValidateData(
+        val plan: String,
+        val tunnel: TunnelConfig
+    )
+
+    data class ValidateResponse(
+        val ok: Boolean,
+        val data: ValidateData?
+    )
+}

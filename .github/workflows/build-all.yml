@@ -199,3 +199,27 @@ jobs:
           draft: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Normalize asset names (GitHub strips CJK from upload filenames)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p /tmp/assets && cd /tmp/assets
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+            --jq '.assets[] | select(.name | test("^[^A-Za-z0-9]")) | "\(.id) \(.name)"' \
+            | while read -r id name; do
+              echo "Mangled asset found: ${name} -> SiliconMate${name}"
+              gh api "repos/${GITHUB_REPOSITORY}/releases/assets/${id}" \
+                -H "Accept: application/octet-stream" > "./${name}"
+              gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${id}"
+              mv "./${name}" "./SiliconMate${name}"
+            done
+          if compgen -G "SiliconMate*" > /dev/null; then
+            gh release upload "${TAG}" SiliconMate*
+            echo "Re-uploaded with normalized names:"
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.assets[].name'
+          else
+            echo "All asset names already normalized."
+          fi

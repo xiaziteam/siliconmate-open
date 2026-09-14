@@ -69,6 +69,8 @@ interface ChatProps {
   deepThinkProgress?: string
   serverConnected?: boolean
   serverConnecting?: boolean
+  /** T029: 激活态 — 状态条三态(未激活/已连接/离线)判据 */
+  activated?: boolean
   messages: Message[]
   isVoiceMode: boolean
   /** 如果是SMCP对话，传对方信息 */
@@ -77,6 +79,8 @@ interface ChatProps {
   smcpGroupTarget?: { groupId: string; groupName: string; memberCount?: number; members?: { userId: string; role: string; accountName?: string; siliconId?: string }[] } | null
   /** 当前用户ID，用于判断群管理权限 */
   myUserId?: string
+  /** T018: 发送失败后重试最后一条用户消息 */
+  onRetryLast?: () => void
 }
 
 /** 高亮搜索关键词 */
@@ -98,11 +102,13 @@ export const Chat: React.FC<ChatProps> = ({
   deepThinkProgress,
   serverConnected,
   serverConnecting,
+  activated,
   messages,
   isVoiceMode,
   smcpTarget,
   smcpGroupTarget,
   myUserId,
+  onRetryLast,
 }) => {
   const isSmcp = !!(smcpTarget || smcpGroupTarget)
   const [input, setInput] = useState('')
@@ -407,22 +413,34 @@ export const Chat: React.FC<ChatProps> = ({
             🎤 语音聊天模式
           </span>
         )}
-        {/* Server connection status indicator */}
-        <span style={{
-          fontSize: '11px',
-          color: serverConnecting ? '#f39c12' : serverConnected ? '#2ecc71' : '#e74c3c',
-          marginLeft: isVoiceMode ? '8px' : 'auto',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '4px',
-        }}>
-          <span style={{
-            width: '6px', height: '6px', borderRadius: '50%',
-            background: serverConnecting ? '#f39c12' : serverConnected ? '#2ecc71' : '#e74c3c',
-            display: 'inline-block',
-          }} />
-          {serverConnecting ? '连接中…' : serverConnected ? '服务端已连接' : '服务端未连接(深度思考不可用)'}
-        </span>
+        {/* T029: 连接状态三态 — 未激活(灰)/已连接(绿)/离线(红)+连接中(琥珀), FR-014 真实心跳驱动 */}
+        {(() => {
+          // 三态优先级: 未激活 > 连接中 > 已连接/离线
+          const st = !activated
+            ? { color: '#7a8aa0', dot: '#7a8aa0', text: '未激活 · 云端功能未启用' }
+            : serverConnecting
+              ? { color: '#f39c12', dot: '#f39c12', text: '连接中…' }
+              : serverConnected
+                ? { color: '#2ecc71', dot: '#2ecc71', text: '已连接' }
+                : { color: '#e74c3c', dot: '#e74c3c', text: '离线 · 重连中…' }
+          return (
+            <span style={{
+              fontSize: '11px',
+              color: st.color,
+              marginLeft: isVoiceMode ? '8px' : 'auto',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}>
+              <span style={{
+                width: '6px', height: '6px', borderRadius: '50%',
+                background: st.dot,
+                display: 'inline-block',
+              }} />
+              {st.text}
+            </span>
+          )
+        })()}
       </header>
 
       {/* 群成员/管理面板 */}
@@ -792,8 +810,29 @@ export const Chat: React.FC<ChatProps> = ({
             color: status === 'deep_thinking' ? '#9b59b6' : '#7a8aa0',
             fontSize: '13px',
             fontStyle: 'italic',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
           }}>
             {statusText}
+            {/* T018: 超时/断网错误 → 一键重试最后一条用户消息 */}
+            {status === 'error' && onRetryLast && (
+              <button
+                onClick={onRetryLast}
+                style={{
+                  padding: '3px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid #3d5afe',
+                  background: 'rgba(61, 90, 254, 0.15)',
+                  color: '#7a9bff',
+                  fontSize: '12px',
+                  fontStyle: 'normal',
+                  cursor: 'pointer',
+                }}
+              >
+                ↻ 重试
+              </button>
+            )}
           </div>
         )}
 

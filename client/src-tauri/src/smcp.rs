@@ -266,6 +266,19 @@ pub async fn smcp_friend_accept(
 }
 
 #[tauri::command]
+pub async fn smcp_friend_reject(
+    state: State<'_, SmcpState>,
+    request_id: String,
+) -> Result<Value, String> {
+    let cfg = state.config.read().await;
+    let uid = cfg.as_ref().map(|c| c.user_id.as_str()).unwrap_or("");
+    let body = serde_json::json!({
+        "request_id": request_id,
+    });
+    smcp_post(&state, "/friend/reject", uid, body).await
+}
+
+#[tauri::command]
 pub async fn smcp_friend_list(state: State<'_, SmcpState>) -> Result<Value, String> {
     let cfg = state.config.read().await;
     let uid = cfg.as_ref().map(|c| c.user_id.as_str()).unwrap_or("");

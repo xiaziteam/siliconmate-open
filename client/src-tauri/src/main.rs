@@ -136,6 +136,7 @@ fn main() {
             smcp::smcp_message_poll,
             smcp::smcp_friend_request,
             smcp::smcp_friend_accept,
+            smcp::smcp_friend_reject,
             smcp::smcp_friend_list,
             smcp::smcp_friend_set_permissions,
             smcp::smcp_friend_remove,

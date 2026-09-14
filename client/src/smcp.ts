@@ -201,6 +201,17 @@ export async function acceptFriendRequest(
   }
 }
 
+/** 拒绝好友请求 (T027) */
+export async function rejectFriendRequest(requestId: string): Promise<any> {
+  const inv = invoke()
+  if (!inv) return { error: 'Tauri not available' }
+  try {
+    return await inv('smcp_friend_reject', { requestId })
+  } catch (e) {
+    return { error: String(e) }
+  }
+}
+
 /** 设置好友权限 */
 export async function setFriendPermissions(
   friendUserId: string,
@@ -283,6 +294,12 @@ export function startPolling(
 ): void {
   stopPolling()
   _onMessage = onMessage
+  // T023: Android 上由 Kotlin SmcpAgentService 权威轮询 — 服务端 message/poll 是消费型队列
+  // (delivered=0→1), JS 与 Kotlin 双端轮询会互相抢消息; 消息经 onSmcpMessages 事件进入前端
+  if ((window as any).NativeBridge) {
+    console.log('[SMCP] Android: JS polling disabled — Kotlin SmcpAgentService is the authoritative poller')
+    return
+  }
   console.log('[SMCP] startPolling: _registered=' + _registered)
   _pollTimer = setInterval(async () => {
     if (!_registered) return

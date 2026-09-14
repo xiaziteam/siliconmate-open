@@ -5,6 +5,7 @@ import {
   getPendingRequests,
   sendFriendRequest,
   acceptFriendRequest,
+  rejectFriendRequest,
   removeFriend,
   lookupSiliconId,
   SmcpFriend,
@@ -44,6 +45,12 @@ interface SidebarProps {
   accountId?: string
   /** 当前用户硅侣号 */
   mySiliconId?: string
+  /** T025: 待处理好友申请数(红点数据源 — Kotlin 后台轮询事件 + 面板内操作回写) */
+  pendingFriendCount?: number
+  /** T025: 面板内申请列表变化时回写 App 全局红点状态 */
+  onPendingFriendCountChange?: (n: number) => void
+  /** T024/T025: 好友申请通知点击信号(递增计数 → 打开好友面板) */
+  openFriendsSignal?: number
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -61,6 +68,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenGroupChat,
   accountId,
   mySiliconId,
+  pendingFriendCount = 0,
+  onPendingFriendCountChange,
+  openFriendsSignal = 0,
 }) => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
   const [showActivateModal, setShowActivateModal] = useState(false)
@@ -91,29 +101,68 @@ export const Sidebar: React.FC<SidebarProps> = ({
       smcpPing().then(setSmcpRelayOk)
       getFriends().then(setSmcpFriends)
       getGroups().then(setSmcpGroups)
-      getPendingRequests().then(setSmcpRequests)
+      getPendingRequests().then(list => {
+        setSmcpRequests(list)
+        // T025: 面板打开即校准全局红点计数
+        onPendingFriendCountChange?.(list.length)
+      })
     }
   }, [showSmcpPanel, accountId])
+
+  // T024/T025: 好友申请系统通知点击 → 拉起好友面板
+  const lastSignalRef = React.useRef(openFriendsSignal)
+  useEffect(() => {
+    if (openFriendsSignal > 0 && openFriendsSignal !== lastSignalRef.current) {
+      lastSignalRef.current = openFriendsSignal
+      setShowSmcpPanel(true)
+    }
+  }, [openFriendsSignal])
+
+  // T025: 红点 = 全局事件计数(Kotlin后台轮询) 与 面板内实时列表 取大者
+  const friendBadge = Math.max(pendingFriendCount, showSmcpPanel ? smcpRequests.length : 0)
 
   const handleActivateSubmit = async () => {
     if (!activateCode.trim()) { setActivateMsg('请输入激活码'); return }
     setActivateLoading(true)
-    setActivateMsg('激活中...')
+    setActivateMsg('激活中, 请稍候...')
     try {
       const resp = await invoke('account_activate', { code: activateCode.trim() })
+      // Android 适配层 resolve {plan, activated:true, tunnel:null}(隧道原生启动);
+      // 桌面 Tauri 可能返回 tunnel 配置 → 需显式启动
       if (resp.tunnel) {
-        try { await invoke('start_tunnel', { config: resp.tunnel }) } catch {}
+        try { await invoke('start_tunnel', { config: resp.tunnel }) } catch (te) {
+          console.warn('[sidebar] tunnel start failed:', te)
+        }
       }
-      setActivateMsg('')
-      setShowActivateModal(false)
-      setActivateCode('')
+      // T015: 激活态双写 — localStorage + 服务端(bind 已落库)
+      try { localStorage.setItem('siliconmate_activated', '1') } catch {}
+      setActivateMsg('激活成功 ✓')
+      setTimeout(() => {
+        setShowActivateModal(false)
+        setActivateCode('')
+        setActivateMsg('')
+      }, 600)
       onActivate(resp.plan)
     } catch (e: any) {
-      const msg = String(e)
+      const msg = String(e?.message || e || '')
       if (msg.includes('未登录')) {
         setActivateMsg('请先注册或登录账号后再激活')
-      } else {
+      } else if (msg.includes('ERR_INVALID')) {
+        setActivateMsg('激活码无效')
+      } else if (msg.includes('ERR_WRONG_PRODUCT')) {
+        setActivateMsg('此激活码不适用于当前产品')
+      } else if (msg.includes('ERR_EXPIRED')) {
+        setActivateMsg('激活码已过期')
+      } else if (msg.includes('ERR_ALREADY_ACTIVATED')) {
+        setActivateMsg('账号已激活, 无需重复激活')
+      } else if (msg.includes('ERR_FORMAT')) {
+        setActivateMsg('激活码格式不正确')
+      } else if (msg.includes('auth_failed')) {
+        setActivateMsg('账号验证失败, 请重新登录')
+      } else if (msg.includes('激活超时')) {
         setActivateMsg(msg)
+      } else {
+        setActivateMsg(msg || '激活失败, 请重试')
       }
     } finally {
       setActivateLoading(false)
@@ -264,8 +313,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       >
         <span style={{ fontSize: '12px', color: '#7a8aa0' }}>
           🦐 {mySiliconId || '虾群好友'}
-          {smcpRequests.length > 0 && (
-            <span style={{ color: '#f39c12', marginLeft: '6px' }}>({smcpRequests.length}请求)</span>
+          {friendBadge > 0 && (
+            <span style={{
+              background: '#e74c3c', color: '#fff', borderRadius: '8px',
+              fontSize: '10px', padding: '1px 5px', marginLeft: '6px',
+              display: 'inline-block', minWidth: '14px', textAlign: 'center',
+            }}>{friendBadge}</span>
           )}
         </span>
         <span style={{ fontSize: '12px', color: '#555' }}>›</span>
@@ -612,7 +665,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       }
                       const targetName = lookup.data?.account_name || addFriendId.trim()
                       setAddFriendMsg('发送请求中...')
-                       const result = await sendFriendRequest('', `你好，我是${targetName}的好友`, { agent_comm: true }, addFriendId.trim())
+                      const result = await sendFriendRequest('', `你好，我是${mySiliconId || '硅侣用户'}，想和你成为好友`, { agent_comm: true }, addFriendId.trim())
                        if (result?.ok) {
                         setAddFriendMsg(`已向 ${targetName}(${addFriendId.trim()}) 发送请求 ✓`)
                         setAddFriendId('')
@@ -666,7 +719,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <button
                       onClick={async () => {
                         await acceptFriendRequest(req.request_id)
-                        setSmcpRequests(prev => prev.filter(r => r.request_id !== req.request_id))
+                        const next = smcpRequests.filter(r => r.request_id !== req.request_id)
+                        setSmcpRequests(next)
+                        onPendingFriendCountChange?.(next.length)
                         getFriends().then(setSmcpFriends)
                       }}
                       style={{
@@ -676,6 +731,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       }}
                     >
                       接受
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await rejectFriendRequest(req.request_id)
+                        const next = smcpRequests.filter(r => r.request_id !== req.request_id)
+                        setSmcpRequests(next)
+                        onPendingFriendCountChange?.(next.length)
+                      }}
+                      style={{
+                        background: 'transparent', color: '#e74c3c', border: '1px solid #e74c3c',
+                        borderRadius: '4px', padding: '1px 6px', cursor: 'pointer', fontSize: '11px',
+                        marginLeft: '4px', flexShrink: 0,
+                      }}
+                    >
+                      拒绝
                     </button>
                   </div>
                 ))}

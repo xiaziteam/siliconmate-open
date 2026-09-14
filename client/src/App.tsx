@@ -24,7 +24,7 @@ import {
   SmcpTarget,
   SmcpGroupTarget,
 } from './conversation'
-import { smcpInit, startPolling, stopPolling, sendMessage as smcpSendMessage, sendGroupMessage, uploadFile, SmcpMessage, taskExecute, TaskResult, listCapabilities, CapabilityInfo, taskCheckTimeouts, taskRemovePendingRemote, taskResultSend, permissionSet } from './smcp'
+import { smcpInit, getMyAgentId, startPolling, stopPolling, sendMessage as smcpSendMessage, sendGroupMessage, uploadFile, SmcpMessage, taskExecute, TaskResult, listCapabilities, CapabilityInfo, taskCheckTimeouts, taskRemovePendingRemote, taskResultSend, permissionSet } from './smcp'
 
 interface ImageAttachment {
   path: string
@@ -40,6 +40,181 @@ type AppView = 'login' | 'chat' | 'voice'
 
 const IS_DEV = import.meta.env.DEV
 
+/**
+ * US1/US2 激活门禁屏 — 未激活时唯一可见界面:
+ * 账号信息 + 激活码输入 + 功能锁定清单。激活成功后由父组件解锁全部功能。
+ */
+const ActivationGate: React.FC<{
+  accountId: string
+  siliconId: string
+  onActivated: (plan: string) => void
+  onSwitchAccount: () => void
+}> = ({ accountId, siliconId, onActivated, onSwitchAccount }) => {
+  const [code, setCode] = useState('')
+  const [msg, setMsg] = useState('')
+  const [msgCls, setMsgCls] = useState<'err' | 'ok' | 'info'>('info')
+  const [loading, setLoading] = useState(false)
+  const invoke = (window as any).__TAURI__?.core?.invoke
+
+  const friendlyError = (e: any): string => {
+    const raw = String(e?.message || e || '')
+    if (raw.includes('ERR_INVALID')) return '激活码无效'
+    if (raw.includes('ERR_WRONG_PRODUCT')) return '此激活码不适用于当前产品'
+    if (raw.includes('ERR_EXPIRED')) return '激活码已过期'
+    if (raw.includes('ERR_ALREADY_ACTIVATED')) return '账号已激活'
+    if (raw.includes('ERR_FORMAT')) return '激活码格式不正确'
+    if (raw.includes('auth_failed')) return '账号验证失败, 请重新登录'
+    if (raw.includes('激活超时')) return raw
+    if (raw.includes('未登录')) return '请先注册或登录账号后再激活'
+    return raw || '激活失败, 请重试'
+  }
+
+  const handleSubmit = async () => {
+    const c = code.trim()
+    if (!c) { setMsg('请输入激活码'); setMsgCls('err'); return }
+    if (!invoke) { setMsg('运行环境未就绪'); setMsgCls('err'); return }
+    setLoading(true)
+    setMsg('激活中, 请稍候...')
+    setMsgCls('info')
+    try {
+      const resp = await invoke('account_activate', { code: c })
+      // Android 适配层 resolve {plan, activated:true, tunnel:null}; 桌面 Tauri 返回同构数据
+      if (resp?.tunnel) {
+        try { await invoke('start_tunnel', { config: resp.tunnel }) } catch (te) {
+          console.warn('[ActivationGate] tunnel start failed:', te)
+        }
+      }
+      const plan = resp?.plan || 'basic'
+      try { localStorage.setItem('siliconmate_activated', '1') } catch {}
+      setMsg('激活成功 ✓')
+      setMsgCls('ok')
+      onActivated(plan)
+    } catch (e: any) {
+      setMsg(friendlyError(e))
+      setMsgCls('err')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const inputStyle: React.CSSProperties = {
+    width: '100%', background: '#0f1115', border: '1px solid #333',
+    borderRadius: '10px', padding: '13px 16px', color: '#e6e6e6',
+    fontSize: '15px', outline: 'none', marginBottom: '14px',
+    boxSizing: 'border-box', letterSpacing: '1px',
+  }
+
+  const lockedItems = [
+    { icon: '💬', name: '云端 AI 聊天' },
+    { icon: '🦐', name: '虾群好友 / 私聊' },
+    { icon: '👥', name: '群聊' },
+    { icon: '🎙️', name: '语音聊天' },
+    { icon: '📱', name: '远程任务执行(截图/OCR/操控)' },
+  ]
+
+  return (
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center',
+      justifyContent: 'center', height: '100vh', padding: '16px',
+      overflowY: 'auto', background: '#0f1115', color: '#e6e6e6',
+      fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif',
+    }}>
+      <div style={{
+        background: '#1a1d25', borderRadius: '16px', padding: '32px 24px',
+        width: '380px', maxWidth: '100%',
+        boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
+      }}>
+        <h1 style={{ fontSize: '24px', fontWeight: 600, marginBottom: '6px', textAlign: 'center' }}>
+          🔒 需要激活
+        </h1>
+        <p style={{ fontSize: '13px', color: '#7a8aa0', marginBottom: '20px', textAlign: 'center' }}>
+          输入 GL 激活码解锁硅侣全部能力
+        </p>
+
+        {/* 账号信息 */}
+        <div style={{
+          background: '#141821', borderRadius: '10px', padding: '12px 14px',
+          marginBottom: '18px', border: '1px solid #262b36',
+        }}>
+          <div style={{ fontSize: '12px', color: '#7a8aa0', marginBottom: '4px' }}>账号</div>
+          <div style={{ fontSize: '14px', color: '#e6e6e6', marginBottom: '8px', wordBreak: 'break-all' }}>
+            {accountId ? accountId.slice(0, 18) + (accountId.length > 18 ? '…' : '') : '—'}
+          </div>
+          <div style={{ fontSize: '12px', color: '#7a8aa0', marginBottom: '4px' }}>硅侣号 (SM-ID)</div>
+          <div
+            onClick={() => { if (siliconId) { try { navigator.clipboard?.writeText(siliconId) } catch {} } }}
+            style={{ fontSize: '14px', color: '#4fc3f7', cursor: siliconId ? 'pointer' : 'default' }}
+            title={siliconId ? '点击复制' : ''}
+          >
+            {siliconId || '—'}
+          </div>
+        </div>
+
+        {/* 激活码输入 */}
+        <input
+          type="text"
+          placeholder="GL-XXXX-XXXX"
+          value={code}
+          onChange={e => setCode(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && !loading && handleSubmit()}
+          style={inputStyle}
+          disabled={loading}
+        />
+        <button
+          onClick={handleSubmit}
+          disabled={loading}
+          style={{
+            width: '100%', background: loading ? '#1d3a8f' : '#2a5cff', color: '#fff',
+            border: 'none', borderRadius: '10px', padding: '13px', fontSize: '16px',
+            cursor: loading ? 'not-allowed' : 'pointer', opacity: loading ? 0.7 : 1,
+          }}
+        >
+          {loading ? '激活中...' : '激活'}
+        </button>
+
+        {msg && (
+          <p style={{
+            marginTop: '14px', fontSize: '13px', textAlign: 'center',
+            color: msgCls === 'err' ? '#e74c3c' : msgCls === 'ok' ? '#2ecc71' : '#7a8aa0',
+          }}>
+            {msg}
+          </p>
+        )}
+
+        {/* 功能锁定清单 */}
+        <div style={{
+          marginTop: '20px', paddingTop: '16px', borderTop: '1px solid #262b36',
+        }}>
+          <div style={{ fontSize: '12px', color: '#7a8aa0', marginBottom: '10px' }}>
+            激活后解锁:
+          </div>
+          {lockedItems.map(item => (
+            <div key={item.name} style={{
+              display: 'flex', alignItems: 'center', gap: '8px',
+              fontSize: '13px', color: '#8a94a6', padding: '5px 0',
+            }}>
+              <span>{item.icon}</span>
+              <span style={{ textDecoration: 'line-through', opacity: 0.7 }}>{item.name}</span>
+              <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#e67e22' }}>🔒 需要激活</span>
+            </div>
+          ))}
+        </div>
+
+        <button
+          onClick={onSwitchAccount}
+          style={{
+            width: '100%', marginTop: '18px', background: 'transparent', color: '#7a8aa0',
+            border: '1px solid #333', borderRadius: '10px', padding: '10px',
+            fontSize: '13px', cursor: 'pointer',
+          }}
+        >
+          切换账号
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export const App: React.FC = () => {
   const [view, setView] = useState<AppView>(IS_DEV ? 'chat' : 'login')
   const [conversations, setConversations] = useState<Conversation[]>(() => loadConversations())
@@ -52,7 +227,10 @@ export const App: React.FC = () => {
   // 移动端自适应：窄屏(<=480px)时侧栏变为抽屉式
   const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 480)
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false)
-  const [activated, setActivated] = useState(false)
+  // T015: 激活态持久化 — 重启 App 从 localStorage 恢复(登录后以服务端为准覆盖)
+  const [activated, setActivated] = useState(() => {
+    try { return localStorage.getItem('siliconmate_activated') === '1' } catch { return false }
+  })
   const [activationPlan, setActivationPlan] = useState<string | null>(null)
   const [deepThinkProgress, setDeepThinkProgress] = useState<string>('')
   const [serverConnected, setServerConnected] = useState(false)
@@ -65,6 +243,10 @@ export const App: React.FC = () => {
     capability: string
     params: any
   } | null>(null)
+  // T025: 好友申请红点计数(Kotlin smcp-friend-request 事件 + Sidebar 面板回写)
+  const [friendReqCount, setFriendReqCount] = useState(0)
+  // T024: 好友申请系统通知点击 → 拉起好友面板信号
+  const [friendsOpenSignal, setFriendsOpenSignal] = useState(0)
   const invoke = (window as any).__TAURI__?.core?.invoke
   const listen = (window as any).__TAURI__?.event?.listen
 
@@ -123,45 +305,101 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('smcp-notification-chat', handler)
   }, [conversations])
 
-  // Async server connection polling — non-blocking, fail-open
-  // Moved out of handleLoginSuccess to avoid blocking UI render
+  // T028/T029: 连接状态持续心跳 — 每10s健康检查, 断网→离线, 重连→恢复(FR-014)
+  // Android connect_server 返回 {status, activated}; 桌面 Tauri 返回 'ok' 字符串 — 归一化处理
   useEffect(() => {
-    if (view !== 'chat' || !invoke || serverConnected) return
+    if (view !== 'chat' || !invoke) return
 
     let cancelled = false
-    const tryConnect = async () => {
+    const checkHealth = async () => {
       if (cancelled) return
       setServerConnecting(true)
       try {
-        const result = await invoke('connect_server') as string
+        const result: any = await invoke('connect_server')
+        const connected = typeof result === 'object'
+          ? result?.status === 'connected'
+          : result === 'ok'
         if (!cancelled) {
-          console.log('[硅侣] 服务端已连接:', result)
-          setServerConnected(true)
+          if (!connected) console.warn('[硅侣] 服务端心跳失败(离线)')
+          setServerConnected(connected)
           setServerConnecting(false)
         }
-      } catch (e: any) {
+      } catch {
         if (!cancelled) {
-          console.warn('[硅侣] 服务端连接失败(深度思考不可用):', String(e))
           setServerConnected(false)
           setServerConnecting(false)
         }
       }
     }
 
-    // First attempt immediately
-    tryConnect()
-    // Then poll every 10 seconds until connected
-    const interval = setInterval(() => {
-      if (!serverConnected && !cancelled) {
-        tryConnect()
-      }
-    }, 10000)
+    // First check immediately, then keep polling every 10s (both states —
+    // 连接成功后继续心跳以感知断网, 恢复网络后自动回到已连接)
+    checkHealth()
+    const interval = setInterval(checkHealth, 10000)
 
     return () => {
       cancelled = true
       clearInterval(interval)
     }
-  }, [view, invoke, serverConnected])
+  }, [view, invoke])
+
+  // US3/T017: 云端聊天历史合并 — 激活后异步拉取(fail-open), 服务端历史与本地对话去重合并
+  useEffect(() => {
+    if (view !== 'chat' || !invoke || !activated) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const hist = await invoke('chat_history') as {
+          messages?: { role: string; text: string; time: number }[]
+        }
+        if (cancelled || !hist?.messages?.length) return
+        const serverMsgs: Message[] = hist.messages
+          .filter(m => (m.text || '').trim())
+          .map((m, i) => ({
+            id: `hist_${i}_${Math.floor((m.time || 0) * 1000)}`,
+            role: m.role === 'user' ? 'user' as const : 'assistant' as const,
+            content: m.text,
+            isStreaming: false,
+            timestamp: Math.floor((m.time || 0) * 1000),
+          }))
+        setConversations(prev => {
+          // 目标: 本地 AI 对话(smcpTarget==null) — 优先已有, 无则新建"云端助手"
+          const idx = prev.findIndex(c => !c.smcpTarget && !c.smcpGroupTarget)
+          let conv: Conversation
+          if (idx >= 0) {
+            conv = prev[idx]
+          } else {
+            conv = {
+              id: `conv_cloud_${Date.now()}`,
+              title: '云端助手',
+              messages: [],
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              smcpTarget: null,
+            }
+          }
+          // 去重合并: 本地已有相同 role+content 的消息跳过(服务端与本地双写场景)
+          const localKeys = new Set(conv.messages.map(m => `${m.role}|${m.content}`))
+          const serverOnly = serverMsgs.filter(m => !localKeys.has(`${m.role}|${m.content}`))
+          if (!serverOnly.length) return prev
+          const serverKeys = new Set(serverMsgs.map(m => `${m.role}|${m.content}`))
+          const localOnly = conv.messages.filter(m => !serverKeys.has(`${m.role}|${m.content}`))
+          const merged = [...serverOnly, ...localOnly].sort((a, b) => a.timestamp - b.timestamp)
+          const updated = { ...conv, messages: merged, updatedAt: Date.now() }
+          if (idx >= 0) {
+            const next = [...prev]
+            next[idx] = updated
+            return next
+          }
+          return [updated, ...prev]
+        })
+        console.log('[硅侣] 云端历史已合并:', hist.messages.length, '条')
+      } catch (e) {
+        console.warn('[硅侣] 云端历史加载失败(不阻塞):', e)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [view, invoke, activated])
 
   // Check agent health when entering chat
   useEffect(() => {
@@ -214,7 +452,16 @@ export const App: React.FC = () => {
   const handleLoginSuccess = async (sid: string, session?: { access_token: string; cookies: any; expires: string }, isActivated?: boolean, plan?: string, siliconId?: string) => {
     setSessionId(sid)
     if (session) setChatgptSession(session)
-    setActivated(isActivated ?? false)
+    // T015: 服务端 activated 为权威状态 — 与 localStorage 双向同步
+    const serverActivated = isActivated ?? false
+    setActivated(serverActivated)
+    try {
+      if (serverActivated) {
+        localStorage.setItem('siliconmate_activated', '1')
+      } else {
+        localStorage.removeItem('siliconmate_activated')
+      }
+    } catch {}
     setActivationPlan(plan ?? null)
     if (siliconId) setMySiliconId(siliconId)
 
@@ -225,6 +472,11 @@ export const App: React.FC = () => {
     smcpInit(sid).then(smcpOk => {
       if (smcpOk) {
         setSmcpReady(true)
+        // T023: Android 上启动 Kotlin 权威轮询服务(仅已激活 — 遵守 US1 门禁)
+        const NB = (window as any).NativeBridge
+        if (NB?.smcpStart && serverActivated && getMyAgentId()) {
+          try { NB.smcpStart(sid, getMyAgentId()) } catch (e) { console.warn('[硅侣] smcpStart failed:', e) }
+        }
         startPolling((msg: SmcpMessage) => {
           handleSmcpIncomingMessage(msg)
         })
@@ -249,16 +501,21 @@ export const App: React.FC = () => {
     })
   }
 
-  const handleGuestEnter = () => {
-    setActivated(false)
-    setActivationPlan(null)
-    setView('chat')
-  }
-
   const handleActivate = useCallback((plan: string) => {
     setActivated(true)
     setActivationPlan(plan)
-  }, [])
+    // T023: 激活成功 → 确保 Kotlin 消息服务已启动(登录时未激活则未启动)
+    const NB = (window as any).NativeBridge
+    if (NB?.smcpStart && sessionId) {
+      // 与 smcpInit 公式一致: A-{accountId前8位}-{role前8位}, role默认 siliconmate → siliconm
+      const agentId = getMyAgentId() || `A-${sessionId.slice(0, 8)}-siliconm`
+      try {
+        if (!NB.smcpIsRunning || !NB.smcpIsRunning()) {
+          NB.smcpStart(sessionId, agentId)
+        }
+      } catch (e) { console.warn('[硅侣] 激活后启动消息服务失败:', e) }
+    }
+  }, [sessionId])
 
   /** 处理远程任务审批：允许/始终允许/拒绝 */
   const handleTaskApproval = useCallback(async (action: 'allow' | 'always' | 'reject') => {
@@ -516,6 +773,55 @@ export const App: React.FC = () => {
         return [updatedConv, ...prev]
       }
     })
+  }, [])
+
+  // T023: Android Kotlin 推送通道 — 消息与远程任务审批事件接线
+  useEffect(() => {
+    const onNativeMessages = (e: Event) => {
+      const msgs = (e as CustomEvent).detail?.messages as SmcpMessage[]
+      if (Array.isArray(msgs)) {
+        msgs.forEach(m => handleSmcpIncomingMessage(m))
+      }
+    }
+    const onTaskRequest = (e: Event) => {
+      const task = (e as CustomEvent).detail?.task
+      if (task && task.task_id) {
+        setTaskApprovalRequest({
+          task_id: task.task_id,
+          from_agent: task.from_agent || '',
+          capability: task.capability || '',
+          params: task.params || {},
+        })
+      } else {
+        // task=null: 任务已超时/已处理 → 关闭审批弹窗
+        setTaskApprovalRequest(null)
+      }
+    }
+    window.addEventListener('smcp-native-messages', onNativeMessages)
+    window.addEventListener('smcp-task-request', onTaskRequest)
+    // T024/T025: 好友申请事件 — Kotlin 后台轮询红点 + 系统通知点击拉起面板
+    const onFriendRequest = (e: Event) => {
+      setFriendReqCount((e as CustomEvent).detail?.count || 0)
+    }
+    const onOpenFriends = () => {
+      // 移动端好友面板在抽屉侧栏内 — 信号到达时确保抽屉可见
+      if (window.innerWidth <= 480) setMobileDrawerOpen(true)
+      setFriendsOpenSignal(s => s + 1)
+    }
+    window.addEventListener('smcp-friend-request', onFriendRequest)
+    window.addEventListener('smcp-open-friends', onOpenFriends)
+    return () => {
+      window.removeEventListener('smcp-native-messages', onNativeMessages)
+      window.removeEventListener('smcp-task-request', onTaskRequest)
+      window.removeEventListener('smcp-friend-request', onFriendRequest)
+      window.removeEventListener('smcp-open-friends', onOpenFriends)
+    }
+  }, [handleSmcpIncomingMessage])
+
+  // T026: 主界面好友入口 — 打开好友面板(移动端先拉出抽屉)
+  const handleOpenFriendsPanel = useCallback(() => {
+    if (window.innerWidth <= 480) setMobileDrawerOpen(true)
+    setFriendsOpenSignal(s => s + 1)
   }, [])
 
   const handleNewConversation = useCallback(() => {
@@ -1002,11 +1308,21 @@ export const App: React.FC = () => {
     setView('chat')
   }, [])
 
+  /** T018: 发送失败后一键重试 — 重发当前会话最后一条用户消息(纯文本, 附件需重新添加) */
+  const handleRetryLast = useCallback(() => {
+    setStatus('idle')
+    const conv = conversations.find(c => c.id === activeConvId)
+    const lastUser = conv ? [...conv.messages].reverse().find(m => m.role === 'user') : null
+    if (!lastUser) return
+    // 去掉显示用的附件前缀行(📷 xxx.png) — 云端重试仅重发文本部分
+    const text = lastUser.content.replace(/^📷[^\n]*/, '').trim()
+    if (text) handleSendMessage(text)
+  }, [conversations, activeConvId, handleSendMessage])
+
   if (view === 'login') {
     return (
       <Login
         onLoginSuccess={handleLoginSuccess}
-        onGuestEnter={handleGuestEnter}
       />
     )
   }
@@ -1017,6 +1333,29 @@ export const App: React.FC = () => {
         onBack={handleVoiceBack}
         sessionId={sessionId}
         chatgptSession={chatgptSession || undefined}
+      />
+    )
+  }
+
+  // ===== US1 激活门禁: 未激活只见账号信息+激活入口, 其余功能全锁定 =====
+  if (!activated) {
+    return (
+      <ActivationGate
+        accountId={sessionId}
+        siliconId={mySiliconId}
+        onActivated={(plan) => { handleActivate(plan) }}
+        onSwitchAccount={() => {
+          try { stopPolling() } catch {}
+          // T023: 停止 Kotlin 消息服务(登出后不再轮询)
+          const NB = (window as any).NativeBridge
+          try { NB?.smcpStop?.() } catch {}
+          try { localStorage.removeItem('siliconmate_activated') } catch {}
+          setSessionId('')
+          setActivated(false)
+          setActivationPlan(null)
+          setSmcpReady(false)
+          setView('login')
+        }}
       />
     )
   }
@@ -1040,6 +1379,9 @@ export const App: React.FC = () => {
           onOpenGroupChat={handleOpenGroupChat}
           accountId={sessionId}
           mySiliconId={mySiliconId}
+          pendingFriendCount={friendReqCount}
+          onPendingFriendCountChange={setFriendReqCount}
+          openFriendsSignal={friendsOpenSignal}
         />
       )}
       {/* 移动端：抽屉式侧栏（点遮罩/选中会话自动关闭） */}
@@ -1072,6 +1414,9 @@ export const App: React.FC = () => {
               onOpenGroupChat={(g, n) => { handleOpenGroupChat(g, n); setMobileDrawerOpen(false) }}
               accountId={sessionId}
               mySiliconId={mySiliconId}
+              pendingFriendCount={friendReqCount}
+              onPendingFriendCountChange={setFriendReqCount}
+              openFriendsSignal={friendsOpenSignal}
             />
           </div>
         </>
@@ -1092,6 +1437,27 @@ export const App: React.FC = () => {
             ≡
           </button>
         )}
+        {/* T026: 主界面虾群好友入口(FR-013 — 非仅抽屉; 桌面侧栏入口保留) */}
+        <button
+          onClick={handleOpenFriendsPanel}
+          title="虾群好友"
+          style={{
+            position: 'absolute', top: '8px', left: isMobile ? '48px' : '8px', zIndex: 100,
+            width: '34px', height: '34px', borderRadius: '8px',
+            background: 'rgba(42,42,58,0.92)', color: '#e6e6e6',
+            border: 'none', fontSize: '16px', cursor: 'pointer',
+          }}
+        >
+          🦐
+          {friendReqCount > 0 && (
+            <span style={{
+              position: 'absolute', top: '-4px', right: '-4px',
+              background: '#e74c3c', color: '#fff', borderRadius: '8px',
+              fontSize: '10px', padding: '1px 4px', lineHeight: 1,
+              minWidth: '14px', textAlign: 'center',
+            }}>{friendReqCount}</span>
+          )}
+        </button>
         <Chat
           onSendMessage={handleSendMessage}
           onVoiceChat={handleVoiceChat}
@@ -1099,11 +1465,13 @@ export const App: React.FC = () => {
           deepThinkProgress={deepThinkProgress}
           serverConnected={serverConnected}
           serverConnecting={serverConnecting}
+          activated={activated}
           messages={activeMessages}
           isVoiceMode={isVoiceMode}
           smcpTarget={activeConversation?.smcpTarget}
           smcpGroupTarget={activeConversation?.smcpGroupTarget}
           myUserId={sessionId}
+          onRetryLast={handleRetryLast}
         />
       </div>
       {/* 远程任务审批弹窗 */}
@@ -1148,6 +1516,7 @@ export const App: React.FC = () => {
                  taskApprovalRequest.capability === 'file.read' ? `📄 读取文件 ${taskApprovalRequest.params?.path || ''}` :
                  taskApprovalRequest.capability === 'shell.exec' ? `💻 执行命令 ${taskApprovalRequest.params?.command || ''}` :
                  taskApprovalRequest.capability === 'ocr' ? '🔍 OCR识别' :
+                 taskApprovalRequest.capability === 'device_control' ? `🕹️ 屏幕操控(${taskApprovalRequest.params?.action || 'tap'})` :
                  `🔧 ${taskApprovalRequest.capability}`}
               </div>
             </div>

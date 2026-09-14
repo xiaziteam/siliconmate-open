@@ -47,3 +47,6 @@ android/build/
 .loopx/
 .codex/
 local.properties
+
+# T031: 部署凭证不入仓
+scripts/.deploy.env

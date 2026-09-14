@@ -2,12 +2,11 @@ import React, { useState } from 'react'
 
 interface LoginProps {
   onLoginSuccess: (sessionId: string, chatgptSession?: { access_token: string; cookies: any; expires: string }, activated?: boolean, plan?: string, siliconId?: string) => void
-  onGuestEnter: () => void
 }
 
 type Tab = 'login' | 'register'
 
-export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) => {
+export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const [tab, setTab] = useState<Tab>('login')
   const [accountName, setAccountName] = useState('')
   const [password, setPassword] = useState('')
@@ -98,7 +97,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
         accountName: accountName.trim(),
         password,
       })
-      say('注册成功！免费模式进入', 'ok')
+      say('注册成功，请激活后使用全部功能', 'ok')
 
       onLoginSuccess(resp.account_id, undefined, false, undefined, resp.silicon_id)
       try { await invoke('finish_enter') } catch {}
@@ -107,17 +106,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
       say(String(e), 'err')
     } finally {
       setLoading(false)
-    }
-  }
-
-  const handleGuest = async () => {
-    if (!invoke) { onGuestEnter(); return }
-    try {
-      await invoke('guest_enter')
-      try { await invoke('finish_enter') } catch {}
-      onGuestEnter()
-    } catch (e: any) {
-      say(String(e), 'err')
     }
   }
 
@@ -157,17 +145,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
     cursor: loading ? 'not-allowed' : 'pointer',
     marginBottom: '12px',
     opacity: loading ? 0.6 : 1,
-  }
-
-  const btnGuest = {
-    width: '100%',
-    background: 'transparent',
-    color: '#7a8aa0',
-    border: '1px solid #333',
-    borderRadius: '10px',
-    padding: '10px',
-    fontSize: '14px',
-    cursor: 'pointer',
   }
 
   return (
@@ -238,10 +215,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
           style={btnPrimary}
         >
           {loading ? (tab === 'login' ? '登录中...' : '注册中...') : (tab === 'login' ? '登录' : '注册')}
-        </button>
-
-        <button onClick={handleGuest} style={btnGuest}>
-          访客模式（日常对话可用，深度思考和语音聊天不可用）
         </button>
 
         {message && (

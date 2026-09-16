@@ -15,7 +15,7 @@ obscura-*
 
 # Generated
 gen/
-Cargo.lock
+# Cargo.lock 必须提交（CI可复现）
 
 # Environment
 .env

@@ -219,6 +219,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
         }}>
           {activated ? '🟢' : '🔴'}
         </div>
+        <div title={`硅侣 v${__APP_VERSION__} · 构建 ${__BUILD_TIME__}`} style={{
+          fontSize: '9px', color: '#7a8aa0', marginTop: '2px', writingMode: 'horizontal-tb',
+        }}>
+          v{__APP_VERSION__}
+        </div>
       </div>
     )
   }
@@ -242,7 +247,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
         borderBottom: '1px solid #222',
       }}>
         <span style={{ fontSize: '14px', fontWeight: 600, color: '#e6e6e6' }}>对话</span>
-        <div style={{ display: 'flex', gap: '6px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span title={`硅侣 v${__APP_VERSION__} · 构建 ${__BUILD_TIME__}`} style={{
+            fontSize: '10px', color: '#7a8aa0', background: '#1a1d26',
+            border: '1px solid #2a2a3a', borderRadius: '4px', padding: '2px 5px',
+          }}>
+            v{__APP_VERSION__}
+          </span>
           <button
             onClick={onToggleCollapse}
             title="折叠侧边栏"
@@ -658,15 +669,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         setTimeout(() => setAddFriendMsg(''), 5000)
                         return
                       }
-                      if (!lookup?.ok && !lookup?.data) {
+                      if (!lookup?.ok && !lookup?.data && !lookup?.account_id) {
                         setAddFriendMsg('硅侣号不存在')
                         setTimeout(() => setAddFriendMsg(''), 3000)
                         return
                       }
-                      const targetName = lookup.data?.account_name || addFriendId.trim()
+                      const targetName = lookup?.data?.account_name || lookup?.account_name || addFriendId.trim()
                       setAddFriendMsg('发送请求中...')
                       const result = await sendFriendRequest('', `你好，我是${mySiliconId || '硅侣用户'}，想和你成为好友`, { agent_comm: true }, addFriendId.trim())
-                       if (result?.ok) {
+                       if (result?.ok || result?.request_id) {
                         setAddFriendMsg(`已向 ${targetName}(${addFriendId.trim()}) 发送请求 ✓`)
                         setAddFriendId('')
                         setTimeout(() => setAddFriendMsg(''), 3000)
@@ -714,7 +725,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     padding: '4px 0', fontSize: '12px',
                   }}>
                     <span style={{ color: '#bbb', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                      {req.from_user_id.slice(0, 12)}…: {req.message}
+                      {req.from_name ? `${req.from_name} (${req.from_silicon_id || req.from_user_id.slice(0, 12)})` : `${req.from_user_id.slice(0, 12)}…`}: {req.message}
                     </span>
                     <button
                       onClick={async () => {

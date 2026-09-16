@@ -1,6 +1,6 @@
 [package]
 name = "siliconmate"
-version = "4.0.0"
+version = "4.1.1"
 edition = "2021"
 description = "硅侣3.0 — 双Agent极简AI助手 (V2+V1融合)"
 

@@ -171,8 +171,11 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
         <h1 style={{ fontSize: '28px', fontWeight: 600, marginBottom: '8px', textAlign: 'center' }}>
           硅侣
         </h1>
-        <p style={{ fontSize: '14px', color: '#7a8aa0', marginBottom: '24px', textAlign: 'center' }}>
+        <p style={{ fontSize: '14px', color: '#7a8aa0', marginBottom: '4px', textAlign: 'center' }}>
           SiliconMate · 硅基生命数字人伴侣
+        </p>
+        <p title={`构建 ${__BUILD_TIME__}`} style={{ fontSize: '11px', color: '#4a5568', marginBottom: '24px', textAlign: 'center' }}>
+          v{__APP_VERSION__}
         </p>
 
         {/* Tab switch */}

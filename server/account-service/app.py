@@ -801,7 +801,7 @@ async def smcp_friend_list(request: Request):
         return err("AUTH", "need auth", 401)
     with _smcp_db() as conn:
         rows = conn.execute("SELECT f.friend_id, f.friend_user_id, f.status, f.granted_perms, f.received_perms, f.alias, f.created_at, a.silicon_id, a.account_name, COALESCE(ag.status, 'offline') as agent_status, ag.last_heartbeat FROM smcp_friends f LEFT JOIN accounts a ON f.friend_user_id=a.account_id LEFT JOIN (SELECT user_id, status, last_heartbeat FROM smcp_agents WHERE status='online' GROUP BY user_id) ag ON f.friend_user_id=ag.user_id WHERE f.user_id=?", (user_id,)).fetchall()
-        prows = conn.execute("SELECT request_id, from_user_id, message, proposed_perms, created_at FROM smcp_friend_requests WHERE to_user_id=? AND status='pending'", (user_id,)).fetchall()
+        prows = conn.execute("SELECT r.request_id, r.from_user_id, r.message, r.proposed_perms, r.created_at, a.silicon_id AS from_silicon_id, a.account_name AS from_name FROM smcp_friend_requests r LEFT JOIN accounts a ON r.from_user_id=a.account_id WHERE r.to_user_id=? AND r.status='pending'", (user_id,)).fetchall()
     friends = []
     for r in rows:
         f = dict(r)

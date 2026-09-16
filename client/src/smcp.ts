@@ -25,6 +25,8 @@ export interface SmcpPendingRequest {
   message: string
   proposed_perms: any
   created_at: string
+  from_silicon_id?: string
+  from_name?: string
 }
 
 export interface SmcpAgent {

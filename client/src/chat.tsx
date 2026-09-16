@@ -270,6 +270,38 @@ export const Chat: React.FC<ChatProps> = ({
   }
 
   const handleFileSelect = async () => {
+    // v4.1.1: Android走原生<input type=file>(WebView由Kotlin onShowFileChooser拉起系统选择器)
+    // 桌面Tauri的plugin-dialog在Android适配层不存在 → 之前点了没下文
+    if ((window as any).NativeBridge) {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.accept = 'image/*'
+      input.onchange = () => {
+        const file = input.files?.[0]
+        if (!file) return
+        setIsProcessingImage(true)
+        const reader = new FileReader()
+        reader.onload = () => {
+          const dataUrl = String(reader.result || '')
+          setImageAttachments(prev => [...prev, {
+            path: file.name,
+            name: file.name,
+            ocr_text: null,
+            ocr_status: 'not_available' as const,
+            file_size: file.size,
+            data: dataUrl.split(',')[1] || '', // base64, SMCP发送直接用
+          }])
+          setIsProcessingImage(false)
+        }
+        reader.onerror = () => {
+          console.error('[file] read error:', reader.error)
+          setIsProcessingImage(false)
+        }
+        reader.readAsDataURL(file)
+      }
+      input.click()
+      return
+    }
     try {
       const selected = await open({
         multiple: false,
@@ -340,7 +372,8 @@ export const Chat: React.FC<ChatProps> = ({
       {/* Header */}
       <header style={{
         padding: '14px 20px',
-        paddingLeft: typeof window !== 'undefined' && window.innerWidth <= 480 ? '52px' : '20px',
+        // 52px避让左上角浮层按钮区(汉堡8-42px/虾群按钮8-42px), 防止遮住标题"硅侣"
+        paddingLeft: '52px',
         background: 'linear-gradient(90deg, #1a2a4a, #0f1115)',
         borderBottom: '1px solid #222',
         display: 'flex',
@@ -404,15 +437,6 @@ export const Chat: React.FC<ChatProps> = ({
         >
           🔍
         </button>
-        {isVoiceMode && (
-          <span style={{
-            fontSize: '12px',
-            color: '#2ecc71',
-            marginLeft: 'auto',
-          }}>
-            🎤 语音聊天模式
-          </span>
-        )}
         {/* T029: 连接状态三态 — 未激活(灰)/已连接(绿)/离线(红)+连接中(琥珀), FR-014 真实心跳驱动 */}
         {(() => {
           // 三态优先级: 未激活 > 连接中 > 已连接/离线
@@ -1013,27 +1037,8 @@ export const Chat: React.FC<ChatProps> = ({
           📎
         </button>
 
-        {/* Voice chat button — only for local chat, desktop only */}
-        {!isSmcp && !isMobile && (
-        <button
-          onClick={onVoiceChat}
-          title={isVoiceMode ? '返回日常对话' : '语音聊天'}
-          style={{
-            background: isVoiceMode ? '#2ecc71' : '#2a2a3a',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '10px',
-            padding: '0 16px',
-            cursor: 'pointer',
-            fontSize: '16px',
-          }}
-        >
-          🗣️
-        </button>
-        )}
-
-        {/* ChatGPT button — only for local chat, desktop only */}
-        {!isSmcp && !isMobile && (
+        {/* ChatGPT button — local chat; desktop opens Safari, Android opens system browser (v4.1.1: 手机可见, 替代语音输入) */}
+        {!isSmcp && (
         <button
           onClick={async () => {
             const invoke = (window as any).__TAURI__?.core?.invoke
@@ -1062,8 +1067,8 @@ export const Chat: React.FC<ChatProps> = ({
         </button>
         )}
 
-        {/* Deep think toggle — only for local chat, desktop only */}
-        {!isSmcp && !isMobile && (
+        {/* Deep think toggle — local chat (v4.1.1: 手机放开, AgentChat在服务端执行与端无关) */}
+        {!isSmcp && (
         <button
           onClick={() => {
             if (!serverConnected && !serverConnecting) {
@@ -1110,26 +1115,7 @@ export const Chat: React.FC<ChatProps> = ({
         </button>
         )}
 
-        {/* Microphone button — only for local chat */}
-        {!isSmcp && (
-        <button
-          onClick={handleMicInput}
-          title={isRecording ? '停止语音输入' : '语音输入'}
-          style={{
-            background: isRecording ? '#e74c3c' : '#2a2a3a',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '10px',
-            padding: '0 16px',
-            cursor: 'pointer',
-            fontSize: '16px',
-            opacity: 1,
-            animation: isRecording ? 'pulse 1.5s ease-in-out infinite' : 'none',
-          }}
-        >
-          🎤
-        </button>
-        )}
+        {/* v4.1.1: 🎤语音输入按钮已移除 — 手机系统键盘自带语音输入, ChatGPT按钮替代 */}
 
         {/* Text input */}
         <input

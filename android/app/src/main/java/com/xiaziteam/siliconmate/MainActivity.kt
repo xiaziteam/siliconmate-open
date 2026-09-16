@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity() {
         private const val VPN_REQUEST_CODE = 1001
         private const val NOTIF_PERMISSION_CODE = 1002
         private const val AUDIO_PERMISSION_CODE = 1003
+        private const val FILE_CHOOSER_REQUEST = 1004
         var instance: MainActivity? = null
             private set
         @JvmStatic
@@ -101,6 +102,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private var pendingFilePickCallback: String? = null
+
+    // v4.1.1: 📎 WebView文件选择 — input[type=file] → onShowFileChooser → 系统选择器
+    private var webFilePathCallback: android.webkit.ValueCallback<Array<Uri>>? = null
 
     private fun getFileNameFromUri(uri: Uri): String? {
         var name: String? = null
@@ -203,6 +207,24 @@ class MainActivity : AppCompatActivity() {
             override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
                 Log.d(TAG, "JS: ${consoleMessage?.message()} (${consoleMessage?.sourceId()}:${consoleMessage?.lineNumber()})")
                 return true
+            }
+
+            // v4.1.1: 📎文件选择支持 — 没有此override时input[type=file]点击无反应
+            override fun onShowFileChooser(
+                view: WebView?,
+                filePathCallback: android.webkit.ValueCallback<Array<Uri>>,
+                fileChooserParams: FileChooserParams
+            ): Boolean {
+                webFilePathCallback?.onReceiveValue(null)
+                webFilePathCallback = filePathCallback
+                val intent = fileChooserParams.createIntent()
+                return try {
+                    startActivityForResult(intent, FILE_CHOOSER_REQUEST)
+                    true
+                } catch (e: android.content.ActivityNotFoundException) {
+                    webFilePathCallback = null
+                    false
+                }
             }
         }
 
@@ -312,6 +334,21 @@ class MainActivity : AppCompatActivity() {
 
     // --- JavaScript Bridge ---
     inner class SiliconMateBridge {
+        /** v4.1.1: ChatGPT跳转 — 系统浏览器打开(替代硅侣语音输入; 手机系统键盘自带语音) */
+        @JavascriptInterface
+        fun openChatgpt(): String {
+            return try {
+                val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://chatgpt.com")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+                "ok"
+            } catch (e: Exception) {
+                Log.e(TAG, "openChatgpt failed: ${e.message}")
+                "error: ${e.message}"
+            }
+        }
+
         @JavascriptInterface
         fun activate(code: String) {
             // US2: 激活必须绑定登录账号 — 未登录直接拒绝
@@ -452,6 +489,25 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun taskExecute(capability: String, paramsJson: String): String {
             return SmcpAgentService.executeTask(capability, paramsJson)
+        }
+
+        /** 本机能力清单 — 代答LLM工具目录(动态注入prompt) */
+        @JavascriptInterface
+        fun taskListCapabilities(): String {
+            val arr = org.json.JSONArray()
+            arr.put(org.json.JSONObject().apply {
+                put("name", "screenshot"); put("description", "截取手机当前屏幕截图"); put("tier", "native"); put("available", true)
+            })
+            arr.put(org.json.JSONObject().apply {
+                put("name", "ocr"); put("description", "截屏并OCR识别屏幕文字, 返回text"); put("tier", "native"); put("available", true)
+            })
+            arr.put(org.json.JSONObject().apply {
+                put("name", "device_control"); put("description", "操控手机屏幕: params.action=tap点击(x,y)/swipe滑动(x,y,x2,y2,duration)/long_press长按(x,y), 坐标为像素"); put("tier", "native"); put("available", true)
+            })
+            arr.put(org.json.JSONObject().apply {
+                put("name", "app.open"); put("description", "打开手机上的应用, params.app_name=应用名(如:设置/微信/汽水音乐)"); put("tier", "native"); put("available", true)
+            })
+            return arr.toString()
         }
 
         /** T020: 回传远程任务结果 — 构造 type:"result" 消息经 message/send 发给发起方 */
@@ -1081,6 +1137,13 @@ class MainActivity : AppCompatActivity() {
                     "if(window.__siliconmate_native) window.__siliconmate_native.onActivateError('VPN权限被拒绝')", null
                 )
             }
+        }
+        // v4.1.1: 📎文件选择结果回传WebView
+        if (requestCode == FILE_CHOOSER_REQUEST) {
+            webFilePathCallback?.onReceiveValue(
+                WebChromeClient.FileChooserParams.parseResult(resultCode, data)
+            )
+            webFilePathCallback = null
         }
     }
 

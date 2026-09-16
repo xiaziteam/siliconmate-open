@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ResolveInfo
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.IBinder
@@ -184,6 +185,33 @@ class SmcpAgentService : Service() {
                         }
                         return taskResultJson("success",
                             JSONObject().put("text", text), JSONArray(), "native", elapsed(), "")
+                    }
+                    "app.open" -> {
+                        val appName = params.optString("app_name", params.optString("name", "")).trim()
+                        if (appName.isBlank()) return taskResultJson("error", JSONObject(), JSONArray(), "none", elapsed(),
+                            "缺少app_name参数")
+                        val pm = a11y.packageManager
+                        val mainIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                        val apps: List<ResolveInfo> = pm.queryIntentActivities(mainIntent, 0)
+                        var matched: ResolveInfo? = null
+                        for (a in apps) {
+                            val label = a.loadLabel(pm)?.toString() ?: continue
+                            if (label.equals(appName, ignoreCase = true)) { matched = a; break }
+                        }
+                        if (matched == null) for (a in apps) {
+                            val label = a.loadLabel(pm)?.toString() ?: continue
+                            if (label.contains(appName, ignoreCase = true) || appName.contains(label, ignoreCase = true)) { matched = a; break }
+                        }
+                        if (matched == null) return taskResultJson("error", JSONObject(), JSONArray(), "none", elapsed(),
+                            "未找到应用: $appName")
+                        val launchIntent = pm.getLaunchIntentForPackage(matched.activityInfo.packageName)
+                            ?: return taskResultJson("error", JSONObject(), JSONArray(), "none", elapsed(),
+                                "应用无启动入口: $appName")
+                        launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        a11y.startActivity(launchIntent)
+                        return taskResultJson("success",
+                            JSONObject().put("app_name", appName).put("package", matched.activityInfo.packageName),
+                            JSONArray(), "native", elapsed(), "")
                     }
                     "device_control" -> {
                         val action = params.optString("action", "tap")

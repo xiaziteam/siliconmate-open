@@ -139,8 +139,9 @@ class AgentAccessibilityService : AccessibilityService() {
         val latch = CountDownLatch(1)
         val resultRef = AtomicReference<String?>(null)
         Handler(Looper.getMainLooper()).post {
-            takeScreenshot(android.view.Display.DEFAULT_DISPLAY, mainExecutor,
-                object : AccessibilityService.TakeScreenshotCallback {
+            try {
+                takeScreenshot(android.view.Display.DEFAULT_DISPLAY, mainExecutor,
+                    object : AccessibilityService.TakeScreenshotCallback {
                     override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
                         try {
                             val hardware = Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
@@ -185,6 +186,12 @@ class AgentAccessibilityService : AccessibilityService() {
                         latch.countDown()
                     }
                 })
+            } catch (e: Exception) {
+                // SecurityException(无canTakeScreenshot能力/竞态丢失) 等 — 防崩溃+防latch死锁
+                Log.e(TAG, "takeScreenshot threw", e)
+                resultRef.set(null)
+                latch.countDown()
+            }
         }
         if (!latch.await(10, TimeUnit.SECONDS)) {
             Log.e(TAG, "takeScreenshot timeout")

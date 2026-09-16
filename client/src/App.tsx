@@ -7,7 +7,7 @@
  * - 用户输入→agent_manager.send_message()→output_filter过滤→chat.tsx显示
  */
 
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Login } from './login'
 import { Chat } from './chat'
 import { VoiceChat } from './voice'
@@ -127,8 +127,11 @@ const ActivationGate: React.FC<{
         <h1 style={{ fontSize: '24px', fontWeight: 600, marginBottom: '6px', textAlign: 'center' }}>
           🔒 需要激活
         </h1>
-        <p style={{ fontSize: '13px', color: '#7a8aa0', marginBottom: '20px', textAlign: 'center' }}>
+        <p style={{ fontSize: '13px', color: '#7a8aa0', marginBottom: '4px', textAlign: 'center' }}>
           输入 GL 激活码解锁硅侣全部能力
+        </p>
+        <p title={`构建 ${__BUILD_TIME__}`} style={{ fontSize: '11px', color: '#4a5568', marginBottom: '20px', textAlign: 'center' }}>
+          硅侣 v{__APP_VERSION__}
         </p>
 
         {/* 账号信息 */}
@@ -258,6 +261,34 @@ export const App: React.FC = () => {
     saveConversations(conversations)
   }, [conversations])
 
+  // v4.1.1: 会话恢复 — 冷启动从localStorage读sessionId免二次登录
+  // fail-open哲学: SMCP初始化失败不踢回登录页(网络波动自愈), session真失效由后续请求报错兜底
+  useEffect(() => {
+    if (IS_DEV) return
+    let savedSid = ''
+    try { savedSid = localStorage.getItem('siliconmate_session_id') || '' } catch {}
+    if (!savedSid) return
+    let savedSiliconId = ''
+    try { savedSiliconId = localStorage.getItem('siliconmate_silicon_id') || '' } catch {}
+    setSessionId(savedSid)
+    if (savedSiliconId) setMySiliconId(savedSiliconId)
+    setView('chat')
+    smcpInit(savedSid).then(smcpOk => {
+      if (!smcpOk) return
+      setSmcpReady(true)
+      // T023: Android Kotlin权威轮询(activated由useState从localStorage恢复)
+      const NB = (window as any).NativeBridge
+      if (NB?.smcpStart && getMyAgentId()) {
+        try { NB.smcpStart(savedSid, getMyAgentId()) } catch (e) { console.warn('[硅侣] smcpStart failed:', e) }
+      }
+      startPolling((msg: SmcpMessage) => {
+        handleSmcpIncomingMessage(msg)
+      })
+    }).catch(e => {
+      console.warn('[硅侣] 会话恢复SMCP初始化失败:', e)
+    })
+  }, [])
+
   // 移动端自适应：监听窗口宽度变化
   useEffect(() => {
     const onResize = () => {
@@ -316,9 +347,10 @@ export const App: React.FC = () => {
       setServerConnecting(true)
       try {
         const result: any = await invoke('connect_server')
+        // Android: {status:'connected'}; 桌面: 返回server_host字符串(如'example.com') — 非空即已连接
         const connected = typeof result === 'object'
           ? result?.status === 'connected'
-          : result === 'ok'
+          : typeof result === 'string' && result.length > 0
         if (!cancelled) {
           if (!connected) console.warn('[硅侣] 服务端心跳失败(离线)')
           setServerConnected(connected)
@@ -452,6 +484,9 @@ export const App: React.FC = () => {
   const handleLoginSuccess = async (sid: string, session?: { access_token: string; cookies: any; expires: string }, isActivated?: boolean, plan?: string, siliconId?: string) => {
     setSessionId(sid)
     if (session) setChatgptSession(session)
+    // v4.1.1: 会话持久化 — 冷启动免二次登录
+    try { localStorage.setItem('siliconmate_session_id', sid) } catch {}
+    if (siliconId) { try { localStorage.setItem('siliconmate_silicon_id', siliconId) } catch {} }
     // T015: 服务端 activated 为权威状态 — 与 localStorage 双向同步
     const serverActivated = isActivated ?? false
     setActivated(serverActivated)
@@ -608,6 +643,124 @@ export const App: React.FC = () => {
     setConversations(prev => [conv, ...prev])
     setActiveConvId(conv.id)
   }, [conversations])
+
+  /** v4.1.1: 好友消息agent消费 — 硅侣最大亮点闭环
+   * 人发来的私聊文本消息 → 云端agent代答 → 回发好友(带agent_reply标记)
+   * 指令消息: agent输出[EXEC:screenshot]等标记 → 本机执行 → 结果回传
+   * 防环: 对方agent代答带agent_reply:true → 不再触发对方消费(硅侣互聊死循环)
+   * 防风暴: msg_id去重 + 串行锁(一次只消费一条) */
+  const consumedMsgIdsRef = useRef<Set<string>>(new Set())
+  const consumingRef = useRef(false)
+  const consumeFriendMessage = useCallback(async (msg: SmcpMessage, text: string, fromAgentId: string) => {
+    const inv = (window as any).__TAURI__?.core?.invoke
+    if (!inv) return
+    if (consumedMsgIdsRef.current.has(msg.msg_id)) return
+    consumedMsgIdsRef.current.add(msg.msg_id)
+    if (consumedMsgIdsRef.current.size > 300) consumedMsgIdsRef.current.clear()
+    if (consumingRef.current) return
+    consumingRef.current = true
+    try {
+      const senderName = msg.params?.from_name || fromAgentId.slice(0, 8)
+      // 工具清单动态注入 — LLM 按清单自主选择工具, 新增能力无需改 prompt
+      let toolManifest = ''
+      let capNames: string[] = []
+      try {
+        const caps = await listCapabilities()
+        ;(window as any).__TAURI__?.core?.invoke?.('js_log', { msg: `代答: listCapabilities返回${Array.isArray(caps) ? caps.length : '非数组:' + typeof caps}个` })
+        if (Array.isArray(caps) && caps.length > 0) {
+          const avail = caps.filter(c => c.available !== false)
+          capNames = avail.map(c => String(c.name))
+          toolManifest = '\n本机可用工具清单(仅可调用以下工具, 勿编造):\n'
+            + avail.map(c => `- ${c.name}: ${c.description}`).join('\n')
+        }
+      } catch (e) { (window as any).__TAURI__?.core?.invoke?.('js_log', { msg: `代答: listCapabilities异常 ${String(e).slice(0, 80)}` }) }
+      const buildPrompt = () => `【硅侣代答】好友「${senderName}」给你的主人发来消息：「${text}」
+请你代主人处理这条消息。规则(必须严格遵守):
+1) 纯问候/闲聊/提问 → 直接输出简短回复(80字内), 不带任何标记。
+2) 任何操作请求(打开应用/截图/读文件/执行命令/剪贴板等) → 只输出一行工具调用, 格式严格为: [EXEC:{"capability":"工具名","params":{参数}}]
+3) 严禁嘴上说"已打开/已执行"却不输出工具调用标记 — 不输出EXEC标记就等于什么都没做, 这是虚假承诺, 绝对禁止。
+4) 工具名必须从下方清单选, params按消息语义推断(打开应用用{"app_name":"应用名"})。${toolManifest ? '' : '\n(本机当前无工具, 只能文字回复)'}
+
+示例:
+消息「打开网易云」→ 输出: [EXEC:{"capability":"app.open","params":{"app_name":"网易云"}}]
+消息「帮我截个屏」→ 输出: [EXEC:{"capability":"screenshot","params":{}}]
+消息「你吃了吗」→ 输出: 还没呢, 主人在忙, 我是他的硅侣数字人~${toolManifest ? '\n' + toolManifest : ''}`
+      const stripWatermark = (s: string) => s.replace(/🤖\s*Generated with\s*\[?[Cc]laude[ -]?[Cc]ode\]?\s*(\([^)]*\))?/g, '').trim()
+      const reply = await inv('send_message', { message: buildPrompt() }) as string
+      if (!reply || typeof reply !== 'string' || !reply.trim()) return
+      let finalText = stripWatermark(reply)
+      ;(window as any).__TAURI__?.core?.invoke?.('js_log', { msg: `代答: LLM原始输出(${finalText.length}字): ${finalText.slice(0, 150).replace(/\n/g, ' ')}` })
+      // EXEC 解析三级: JSON格式 → 旧格式[EXEC:xxx] → 裸能力名(清单内全匹配)
+      const parseExec = (s: string): { capability: string; params: any } | null => {
+        const jsonMatch = s.match(/\[EXEC:\s*(\{[\s\S]*?\})\s*\]/)
+        if (jsonMatch) {
+          try {
+            const call = JSON.parse(jsonMatch[1])
+            if (call?.capability) return { capability: String(call.capability).toLowerCase(), params: call.params || {} }
+          } catch { /* JSON坏了走legacy */ }
+        }
+        const legacyMatch = s.match(/\[EXEC:([a-z_.]+)\]/i)
+        if (legacyMatch) return { capability: legacyMatch[1].toLowerCase(), params: {} }
+        const bare = s.trim().toLowerCase()
+        if (capNames.length > 0 && capNames.some(n => n.toLowerCase() === bare)) {
+          return { capability: bare, params: {} }
+        }
+        return null
+      }
+      let parsed = parseExec(finalText)
+      // 兜底重试: 无EXEC但消息含操作意图词 → LLM嘴上答应的虚假承诺, 强硬重试一次
+      const opIntent = /打开|开启|截屏|截图|读取|读一下|执行|运行|复制|粘贴|剪贴板|发飞书/.test(text)
+      if (!parsed && opIntent && toolManifest) {
+        ;(window as any).__TAURI__?.core?.invoke?.('js_log', { msg: '代答: 无EXEC但检测到操作意图, 强硬重试' })
+        const retry = await inv('send_message', { message: `你上一次回复"${finalText.slice(0, 60)}"是虚假承诺 — 你没有执行任何操作, 因为回复里没有工具调用标记。这条消息是明确的操作请求, 你必须输出工具调用。
+
+再次强调: 操作请求只允许输出一行, 格式: [EXEC:{"capability":"工具名","params":{参数}}], 严禁输出任何其他文字, 严禁再次声称"已打开/已执行"。
+
+可用工具: ${capNames.join(' / ')}
+
+原始消息:「${text}」
+现在, 只输出那一行工具调用:` }) as string
+        if (retry && typeof retry === 'string' && retry.trim()) {
+          finalText = stripWatermark(retry)
+          ;(window as any).__TAURI__?.core?.invoke?.('js_log', { msg: `代答: 重试输出(${finalText.length}字): ${finalText.slice(0, 120).replace(/\n/g, ' ')}` })
+          parsed = parseExec(finalText)
+        }
+      }
+      let execCapability = ''
+      let execParams: any = {}
+      if (parsed) { execCapability = parsed.capability; execParams = parsed.params }
+      if (execCapability) {
+        const capability = execCapability
+        try {
+          const result = await taskExecute(capability, execParams) as TaskResult
+          finalText = result?.status === 'success'
+            ? `✅ 已为你执行 ${capability}` + (result.data?.text ? `：${String(result.data.text).slice(0, 120)}` : (execParams?.app_name ? `（${String(execParams.app_name)}）` : '（结果已生成）'))
+            : `⚠️ 执行 ${capability} 失败: ${result?.error_message || '未知原因'}`
+        } catch (e: any) {
+          finalText = `⚠️ 执行 ${capability} 失败: ${String(e?.message || e)}`
+        }
+      }
+      const sendResult = await smcpSendMessage(fromAgentId, msg.from_user || '', finalText, { agent_reply: true })
+      if (sendResult?.error) console.warn('[SMCP] agent reply send failed:', sendResult.error)
+      // 本地对话留痕
+      const agentMsg: Message = {
+        id: `agent_reply_${msg.msg_id}`,
+        role: 'assistant',
+        content: `🤖 已代答 → ${senderName}: ${finalText}`,
+        isStreaming: false,
+        timestamp: Date.now(),
+      }
+      setConversations(prev => {
+        const targetConv = prev.find(c => c.smcpTarget && c.smcpTarget.agentId === fromAgentId)
+        if (!targetConv) return prev
+        return prev.map(c => c.id === targetConv.id ? addMessage(c, agentMsg) : c)
+      })
+    } catch (e) {
+      console.warn('[SMCP] consumeFriendMessage error:', e)
+    } finally {
+      consumingRef.current = false
+    }
+  }, [])
 
   /** SMCP: 收到中继消息，放入对应对话 */
   const handleSmcpIncomingMessage = useCallback((msg: SmcpMessage) => {
@@ -773,7 +926,13 @@ export const App: React.FC = () => {
         return [updatedConv, ...prev]
       }
     })
-  }, [])
+
+    // v4.1.1: 人发来的私聊文本消息 → agent自动消费代答(硅侣最大亮点);
+    // 群聊/文件/agent_reply消息不触发, 防环防风暴见consumeFriendMessage
+    if (!groupId && !fileId && text && msg.params?.agent_reply !== true) {
+      consumeFriendMessage(msg, text, fromAgentId)
+    }
+  }, [consumeFriendMessage])
 
   // T023: Android Kotlin 推送通道 — 消息与远程任务审批事件接线
   useEffect(() => {
@@ -1350,6 +1509,8 @@ export const App: React.FC = () => {
           const NB = (window as any).NativeBridge
           try { NB?.smcpStop?.() } catch {}
           try { localStorage.removeItem('siliconmate_activated') } catch {}
+          try { localStorage.removeItem('siliconmate_session_id') } catch {}
+          try { localStorage.removeItem('siliconmate_silicon_id') } catch {}
           setSessionId('')
           setActivated(false)
           setActivationPlan(null)

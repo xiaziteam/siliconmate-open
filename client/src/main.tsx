@@ -13,6 +13,21 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
   const NB = (window as any).NativeBridge
   const accountStore: { accountId: string; siliconId: string; apiKey: string; activated: boolean } = { accountId: '', siliconId: '', apiKey: '', activated: false }
 
+  // v4.1.1: 会话恢复 — 冷启动从localStorage回灌accountStore(内存态), 并同步Kotlin侧userId
+  // 无此步骤时 connect_server/send_message 判"未登录", 用户被迫二次登录
+  try {
+    const savedId = localStorage.getItem('siliconmate_session_id') || ''
+    if (savedId) {
+      accountStore.accountId = savedId
+      accountStore.siliconId = localStorage.getItem('siliconmate_silicon_id') || ''
+      accountStore.activated = localStorage.getItem('siliconmate_activated') === '1'
+      NB.setUserId(savedId)
+      console.log('[NativeBridge] 会话恢复:', savedId.slice(0, 8), 'activated:', accountStore.activated)
+    }
+  } catch (e) {
+    console.warn('[NativeBridge] 会话恢复失败:', e)
+  }
+
   ;(window as any).__TAURI__ = {
     core: {
       invoke: async (cmd: string, args: any = {}) => {
@@ -481,6 +496,15 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
               return { task_id: '', status: 'error', data: {}, screenshots: [], error_message: String(e), execution_tier: 'none', duration_ms: 0, created_at: Date.now() }
             }
           }
+          case 'task_list_capabilities': {
+            // 本机能力清单 — 代答LLM工具目录
+            try {
+              const r = NB.taskListCapabilities()
+              return typeof r === 'string' ? JSON.parse(r) : r
+            } catch (e) {
+              return []
+            }
+          }
           case 'smcp_task_result_send': {
             // T020: 回传 type:"result" 消息给发起方
             try {
@@ -513,12 +537,15 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
             // Android: 超时由 Kotlin 120s看门狗负责, 前端5分钟例行检查为no-op
             return []
           }
-          case 'task_list_capabilities': {
-            return [
-              { name: 'screenshot', tier: 'native', description: '屏幕截图(无障碍)', available: true },
-              { name: 'ocr', tier: 'native', description: '屏幕文字识别(ML Kit)', available: true },
-              { name: 'device_control', tier: 'native', description: '屏幕操控(点击/滑动/长按)', available: true },
-            ]
+          // v4.1.1: 诊断桥 — App.tsx js_log打点落 logcat(onConsoleMessage → "JS:" 行)
+          case 'js_log': {
+            console.log('[js_log]', String(args?.msg || ''))
+            return true
+          }
+          // v4.1.1: ChatGPT跳转 — Android系统浏览器打开(桌面版仍走Tauri open_chatgpt_safari)
+          case 'open_chatgpt_safari': {
+            if (!NB.openChatgpt) throw new Error('本机不支持打开ChatGPT')
+            return String(NB.openChatgpt())
           }
           default:
             console.warn('[NativeBridge] unhandled command:', cmd)

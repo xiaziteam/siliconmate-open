@@ -29,6 +29,22 @@ pub mod permission;
 
 use account::{AppCtx, SessionState};
 
+/// JS-side debug log — release 版 WKWebView console 不可见，统一落 /tmp/siliconmate-debug.log
+#[tauri::command]
+fn js_log(msg: String) {
+    use std::io::Write;
+    if let Ok(mut log) = std::fs::OpenOptions::new()
+        .create(true).append(true)
+        .open("/tmp/siliconmate-debug.log")
+    {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(log, "[{}][js] {}", ts, msg);
+    }
+}
+
 fn main() {
     // Safety: clear any leftover PAC proxy from previous crash/force-quit
     #[cfg(target_os = "macos")]
@@ -49,7 +65,7 @@ fn main() {
             .create(true).append(true)
             .open("/tmp/siliconmate-debug.log")
         {
-            let _ = writeln!(log, "[startup] v3.3.0 base_url={}, self_signed={}", base_url, self_signed);
+            let _ = writeln!(log, "[startup] v{} base_url={}, self_signed={}", std::env!("CARGO_PKG_VERSION"), base_url, self_signed);
         }
     }
 
@@ -184,6 +200,7 @@ fn main() {
             // SMCP Task/Result protocol
             smcp::smcp_task_send,
             smcp::smcp_task_result_send,
+            js_log,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

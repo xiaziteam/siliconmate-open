@@ -24,6 +24,7 @@ pub mod smcp;
 // Agent capability modules (硅侣Agent能力升级)
 pub mod task_engine;
 pub mod nuphus_bridge;
+pub mod vision_engine;
 pub mod native_cmds;
 pub mod permission;
 
@@ -97,8 +98,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             // Account
             account::register,
-            account::l1_login,
-            account::activate,
+            account::l1_login,            account::activate,
             account::account_activate,
             account::apply_session,
             account::heartbeat,
@@ -188,6 +188,10 @@ fn main() {
             nuphus_bridge::nuphus_execute,
             nuphus_bridge::nuphus_status,
             nuphus_bridge::nuphus_ocr,
+            // Vision Engine (v4.2.0 视觉引擎设置 + 模型下载)
+            vision_engine::vision_engine_status,
+            vision_engine::vision_engine_set,
+            vision_engine::vision_models_download,
             // Native Commands (macOS direct)
             native_cmds::native_screenshot,
             native_cmds::native_open_app,
@@ -202,6 +206,14 @@ fn main() {
             smcp::smcp_task_result_send,
             js_log,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            // 退场必恢复：App 真正退出时释放系统代理接管，用户网络恢复原样。
+            // 覆盖正常退出 / Cmd+Q / 激活失效后的退出；崩溃场景由下次启动的
+            // cleanup_leftover_proxy() 依据持久化接管记录自愈。
+            if let tauri::RunEvent::Exit = event {
+                tunnel::proxy_release();
+            }
+        });
 }

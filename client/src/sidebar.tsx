@@ -94,6 +94,86 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [inviteSelectedIds, setInviteSelectedIds] = useState<Set<string>>(new Set())
 
   const invoke = (window as any).__TAURI__?.core?.invoke
+  const listen = (window as any).__TAURI__?.event?.listen
+
+  // 视觉引擎设置 (v4.2.0)
+  const [showVisionModal, setShowVisionModal] = useState(false)
+  const [visionStatus, setVisionStatus] = useState<any>(null)
+  const [visionOcrEngine, setVisionOcrEngine] = useState('auto')
+  const [visionApiUrl, setVisionApiUrl] = useState('')
+  const [visionApiKey, setVisionApiKey] = useState('')
+  const [visionApiModel, setVisionApiModel] = useState('')
+  const [visionSaveMsg, setVisionSaveMsg] = useState('')
+  const [visionDownloading, setVisionDownloading] = useState(false)
+  const [visionProgress, setVisionProgress] = useState('')
+
+  // 打开面板时拉取状态
+  useEffect(() => {
+    if (showVisionModal) {
+      setVisionSaveMsg('')
+      invoke?.('vision_engine_status').then((s: any) => {
+        setVisionStatus(s)
+        setVisionOcrEngine(s?.config?.ocrEngine || 'auto')
+        setVisionApiUrl(s?.config?.apiUrl || '')
+        setVisionApiModel(s?.config?.apiModel || '')
+        setVisionApiKey('')
+        setVisionDownloading(!!s?.models?.downloading)
+      })
+    }
+  }, [showVisionModal])
+
+  // 下载进度事件流
+  useEffect(() => {
+    if (!listen || !showVisionModal) return
+    let unlisten: (() => void) | null = null
+    listen('vision:download', (event: any) => {
+      const p = event.payload
+      if (p.kind === 'progress') {
+        const pct = p.total > 0 ? Math.round((p.downloaded / p.total) * 100) : 0
+        const mb = (p.downloaded / 1024 / 1024).toFixed(1)
+        setVisionProgress(`(${p.index}/${p.count}) ${p.file} ${pct > 0 ? pct + '%' : mb + 'MB'}`)
+      } else if (p.kind === 'done') {
+        setVisionDownloading(false)
+        setVisionProgress('')
+        setVisionSaveMsg('模型下载完成 ✓')
+        invoke?.('vision_engine_status').then(setVisionStatus)
+      } else if (p.kind === 'error') {
+        setVisionDownloading(false)
+        setVisionProgress('')
+        setVisionSaveMsg('下载失败: ' + (p.message || '未知错误'))
+      }
+    }).then((fn: () => void) => { unlisten = fn })
+    return () => { unlisten?.() }
+  }, [listen, showVisionModal])
+
+  const saveVisionConfig = async () => {
+    try {
+      const r = await invoke?.('vision_engine_set', {
+        ocrEngine: visionOcrEngine,
+        apiUrl: visionApiUrl,
+        apiKey: visionApiKey.trim() ? visionApiKey : undefined,
+        apiModel: visionApiModel,
+      })
+      if (r?.ok) {
+        setVisionSaveMsg('已保存 ✓')
+        setVisionApiKey('')
+        setTimeout(() => setVisionSaveMsg(''), 2500)
+        invoke?.('vision_engine_status').then(setVisionStatus)
+      }
+    } catch (e: any) {
+      setVisionSaveMsg('保存失败: ' + String(e))
+    }
+  }
+
+  const startVisionDownload = async () => {
+    try {
+      await invoke?.('vision_models_download')
+      setVisionDownloading(true)
+      setVisionSaveMsg('')
+    } catch (e: any) {
+      setVisionSaveMsg(String(e))
+    }
+  }
 
   // Load SMCP data when panel opens
   useEffect(() => {
@@ -330,6 +410,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
               fontSize: '10px', padding: '1px 5px', marginLeft: '6px',
               display: 'inline-block', minWidth: '14px', textAlign: 'center',
             }}>{friendBadge}</span>
+          )}
+        </span>
+        <span style={{ fontSize: '12px', color: '#555' }}>›</span>
+      </div>
+
+      {/* 视觉引擎设置入口 (v4.2.0) */}
+      <div
+        onClick={() => setShowVisionModal(true)}
+        style={{
+          padding: '8px 14px',
+          borderBottom: '1px solid #222',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          cursor: 'pointer',
+          transition: 'background 0.15s',
+        }}
+        onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.background = '#141820'}
+        onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.background = 'transparent'}
+      >
+        <span style={{ fontSize: '12px', color: '#7a8aa0' }}>
+          👁 视觉引擎
+          {visionStatus?.models && !visionStatus.models.ocrReady && (
+            <span style={{ color: '#f39c12', marginLeft: '6px', fontSize: '10px' }}>· 缺本地模型</span>
           )}
         </span>
         <span style={{ fontSize: '12px', color: '#555' }}>›</span>
@@ -1013,6 +1117,128 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 视觉引擎设置模态框 (v4.2.0) */}
+      {showVisionModal && (
+        <div style={{
+          position: 'absolute',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 200,
+        }}>
+          <div style={{
+            width: '380px',
+            maxHeight: '85%',
+            overflowY: 'auto',
+            background: '#0f1115',
+            border: '1px solid #333',
+            borderRadius: '10px',
+            padding: '16px',
+          }}>
+            {/* 标题栏 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#e6e6e6' }}>👁 视觉引擎</span>
+              <button
+                onClick={() => setShowVisionModal(false)}
+                style={{ background: '#2a2a3a', color: '#aaa', border: 'none', borderRadius: '6px', width: '28px', height: '28px', cursor: 'pointer' }}
+              >✕</button>
+            </div>
+
+            {/* OCR 引擎选择 */}
+            <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '6px' }}>OCR 文字识别引擎</div>
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
+              {[['auto', '自动'], ['local', '本地模型'], ['api', 'API']].map(([v, label]) => (
+                <button
+                  key={v}
+                  onClick={() => setVisionOcrEngine(v)}
+                  style={{
+                    flex: 1, padding: '6px 0',
+                    background: visionOcrEngine === v ? '#2a5cff' : '#1a1d26',
+                    color: visionOcrEngine === v ? '#fff' : '#888',
+                    border: visionOcrEngine === v ? '1px solid #2a5cff' : '1px solid #2a2a3a',
+                    borderRadius: '6px', cursor: 'pointer', fontSize: '12px',
+                  }}
+                >{label}</button>
+              ))}
+            </div>
+            <div style={{ fontSize: '10px', color: '#666', marginBottom: '14px' }}>
+              {visionOcrEngine === 'auto' && '自动：macOS 用系统自带识别（零模型），其他平台用本地模型'}
+              {visionOcrEngine === 'local' && '本地模型：PaddleOCR，离线可用，需先下载模型'}
+              {visionOcrEngine === 'api' && 'API：调云端视觉大模型，识别最准，需配置下方 API'}
+            </div>
+
+            {/* 本地模型状态 */}
+            <div style={{ borderTop: '1px solid #222', paddingTop: '10px', marginBottom: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <span style={{ fontSize: '11px', color: '#7a8aa0' }}>本地模型（OCR 必需 / 图标检测可选）</span>
+                <span style={{ fontSize: '10px', color: visionStatus?.models?.ocrReady ? '#2ecc71' : '#f39c12' }}>
+                  {visionStatus?.models ? (visionStatus.models.ocrReady ? 'OCR 就绪 ✓' : '未下载') : '检测中…'}
+                </span>
+              </div>
+              {visionStatus?.models?.missing?.length > 0 && (
+                <div style={{ fontSize: '10px', color: '#888', marginBottom: '6px', wordBreak: 'break-all' }}>
+                  缺失: {visionStatus.models.missing.join('、')}
+                </div>
+              )}
+              {visionProgress && (
+                <div style={{ fontSize: '10px', color: '#2a9cff', marginBottom: '6px' }}>{visionProgress}</div>
+              )}
+              <button
+                onClick={startVisionDownload}
+                disabled={visionDownloading}
+                style={{
+                  width: '100%', padding: '6px 0',
+                  background: visionDownloading ? '#1a3a1a' : visionStatus?.models?.ocrReady ? '#2a2a3a' : '#2a5cff',
+                  color: visionDownloading ? '#2ecc71' : '#fff',
+                  border: 'none', borderRadius: '6px', cursor: visionDownloading ? 'default' : 'pointer',
+                  fontSize: '11px',
+                }}
+              >
+                {visionDownloading ? '下载中…' : visionStatus?.models?.ocrReady ? '重新下载/补全模型' : '下载模型 (~28MB)'}
+              </button>
+            </div>
+
+            {/* API 配置 */}
+            <div style={{ borderTop: '1px solid #222', paddingTop: '10px', marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '6px' }}>
+                视觉 API（API 模式必需，也可用于图标感知）
+              </div>
+              <input
+                type="text" placeholder="Base URL（如 https://api.xxx.com/v1）"
+                value={visionApiUrl} onChange={e => setVisionApiUrl(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0a0c10', border: '1px solid #333', borderRadius: '6px', padding: '6px 10px', color: '#e6e6e6', fontSize: '11px', outline: 'none', marginBottom: '6px' }}
+              />
+              <input
+                type="password" placeholder={visionStatus?.config?.apiConfigured ? 'API Key（已配置，留空=不修改）' : 'API Key'}
+                value={visionApiKey} onChange={e => setVisionApiKey(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0a0c10', border: '1px solid #333', borderRadius: '6px', padding: '6px 10px', color: '#e6e6e6', fontSize: '11px', outline: 'none', marginBottom: '6px' }}
+              />
+              <input
+                type="text" placeholder="视觉模型名（如 qwen-vl-plus / gpt-4o-mini）"
+                value={visionApiModel} onChange={e => setVisionApiModel(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0a0c10', border: '1px solid #333', borderRadius: '6px', padding: '6px 10px', color: '#e6e6e6', fontSize: '11px', outline: 'none' }}
+              />
+            </div>
+
+            {/* 保存 */}
+            <button
+              onClick={saveVisionConfig}
+              style={{
+                width: '100%', padding: '8px 0', background: '#2a5cff', color: '#fff',
+                border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
+              }}
+            >保存设置</button>
+            {visionSaveMsg && (
+              <div style={{ fontSize: '11px', color: visionSaveMsg.includes('✓') ? '#2ecc71' : '#e74c3c', marginTop: '6px', textAlign: 'center' }}>
+                {visionSaveMsg}
+              </div>
+            )}
           </div>
         </div>
       )}

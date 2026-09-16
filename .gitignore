@@ -15,7 +15,9 @@ obscura-*
 
 # Generated
 gen/
-# Cargo.lock 必须提交（CI可复现）
+
+# Cargo.lock 必须提交：Rust二进制应用锁依赖保证CI可复现
+# （2026-09-17教训：无锁文件CI浮动解析，enigo/xcap新版要libxdo/libgbm，Linux链接突然挂）
 
 # Environment
 .env

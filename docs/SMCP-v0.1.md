@@ -53,7 +53,7 @@ Agent启动时向中继服务器注册：
   "role": "mobile",
   "device": "android",
   "capabilities": ["im", "tunnel", "notify", "xianyu"],
-  "endpoint": "http://192.168.1.121:18083"
+  "endpoint": "http://192.168.50.121:18083"
 }
 ```
 
